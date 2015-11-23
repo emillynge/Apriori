@@ -13,113 +13,69 @@ class AprioriSet(tuple):
         :param collect_set: AprioriSet of size k
         :return:
         """
-        lo = 0
-        hi = bisect.bisect_right(self, other_set[-1])
-        new_i = None
-        for i in other_set:
-            lo = bisect.bisect_left(self, i, lo=lo, hi=hi)
-            if lo == len(self) or self[lo] != i:
-                if new_i is not None:
-                    return  # break function as this is the second new item to be found
-                new_i = i
+        el_diff = None
+        for idx, (el1, el2) in enumerate(zip(self, other_set)):
+            if el1 != el2:
+                if el_diff is not None:
+                    return
+                el_diff = idx, el2
 
-        if new_i is not None:
-            collect_set.add(AprioriSet(chain(self[:lo], (new_i,), self[lo:])))
+        if el_diff is not None:
+            collect_set.add(AprioriSet(chain(self[:el_diff[0]], (el_diff[1],), self[el_diff[0]:])))
 
 
 class AprioriCollection(object):
-    __slots__ = ['lists', 'k', 'size', 'counts', 'in_lists']
+    __slots__ = ['set_list', 'k', 'size', 'counts', 'in_lists']
 
     def __init__(self, k):
         self.k = k
-        self.lists = tuple(list() for _ in range(k))
+        self.set_list = list()
         self.size = 0
         self.counts = list()
         self.in_lists = set()
 
     def _index(self, find_set: AprioriSet):
-        lo = 0
-        hi = self.size - 1
-
-        for k, (l, i) in enumerate(zip(self.lists, find_set)):
-            lo = bisect.bisect_left(l, i, lo=lo, hi=hi)      # for i, find lower index
-
-            # if this point is occupied by a different i, the set is not in collection
-            if l[lo] != i:
-                raise KeyError('set not in collection')
-            elif k == self.k - 1:
-                return lo   # no more lists to look through. this is the index of out item
-
-            # We cannot yet determine if set is in collection get a high bound and move to next i
-            hi = bisect.bisect_right(l, i, lo=lo, hi=hi)
-        else:
-            return lo # the loop ended without finding a different set => this set already exists in this collection
+        return bisect.bisect_left(self.set_list, find_set)
 
     def add(self, new_set: AprioriSet):
-        if self.size == 0:
-            self._insert_set(new_set, 0)
-            return
+        idx = self._index(new_set)
+        if idx == self.size or self.set_list[idx] != new_set:
+            self._insert_set(new_set, idx)
 
-        lo = 0
-        hi = self.size
-
-        for l, i in zip(self.lists, new_set):
-            lo = bisect.bisect_left(l, i, lo=lo, hi=hi)      # for i, find lower index for insertion
-            if lo == self.size or l[lo] != i:                              # if this point is occupied by a different set, do insertion here
-                break
-
-            # We cannot yet determine if insertion point is different. get a high bound and move to next i
-            hi = bisect.bisect_right(l, i, lo=lo, hi=hi)
-        else:
-            return  # the loop ended without finding a different set => this set already exists in this collection
-
-        self._insert_set(new_set, lo)
-
-    def _insert_set(self, new_set, idx):
-        # We found an insertion point with different i. This set is not in collection and should be inserted
-        for l, i in zip(self.lists, new_set):
-            l.insert(idx, i)
+    def _insert_set(self, new_set: AprioriSet, idx):
+        self.set_list.insert(idx, new_set)
         self.size += 1
         self.in_lists.update(iter(new_set))
 
     def merge(self, other_collection):
         assert isinstance(other_collection, AprioriCollection)
-        self.lists = list(zip(*self._merge_generator(self.lists, other_collection.lists)))
-        self.size = len(self.lists[0])
+        self.set_list = list(self._merge_generator(self.set_list, other_collection.set_list))
+        self.size = len(self.set_list[0])
         self.in_lists.update(other_collection.in_lists)
         return self
 
     def _merge_generator(self, lists1: list, lists2:list):
-        gen1 = zip(*lists1)
-        gen2 = zip(*lists2)
+        gen1 = iter(lists1)
+        gen2 = iter(lists2)
         it1 = next(gen1)
         it2 = next(gen2)
 
-        pop_side = None # pop from it1: True, from it2, from both: None
         while True:
-            for el1, el2 in zip(it1, it2):
-                if el1 < el2:
-                    yield it1
-                    pop_side = True
-                    break
-
-                if el2 < el1:
-                    yield it2
-                    pop_side = False
-                    break
-            else:   # no break => it1 and it2 is the same item
-                yield it1
-                pop_side = None
-
             try:
-                if pop_side:    # all these may raise StopIteration
+                if it1 < it2:    # all these may raise StopIteration
+                    yield it1
                     it1 = next(gen1)
-                elif pop_side is False:
+
+                elif it2 < it1:
+                    yield it2
                     it2 = next(gen2)
+
                 else:
+                    yield it1
                     it1, it2 = next(gen1), next(gen2)
             except StopIteration:
                 break
+
         # one of the iterators will be empty
         for it1 in gen1:
             yield it1
@@ -127,32 +83,13 @@ class AprioriCollection(object):
         for it2 in gen2:
             yield it2
 
-
-
-
-
-
-
-
     def reset_counts(self):
         self.counts = [0 for _ in range(self.size)]
 
     def count(self, count_set: AprioriSet):
-        try:
-            self.counts[self._index(count_set)] += 1
-        except KeyError:
-            pass
-
-    # def _recur_bounds(self, i, hi, lo, j):
-    #     l = self.lists[j]
-    #     inner_lo = bisect.bisect_left(l, i, lo=lo, hi=hi)
-    #
-    #     # if i is in list, find hi bound using newfound lo
-    #     if l[inner_lo] == i:
-    #         inner_hi = bisect.bisect_right(l, i, lo=inner_lo, hi=hi)
-    #
-    #     # if i is NOT in list, try the next one with same bounds
-    #     else:
+        idx = self._index(count_set)
+        if idx != self.size and self.set_list[idx] == count_set:
+            self.counts[idx] += 1
 
     def filter_infrequent(self, basket_set: Sequence):
         """
@@ -169,17 +106,27 @@ class AprioriCollection(object):
         Add basket items sets of size k to counts
         :param basket_set: SORTED sequence
         :return:
+        Note that the item_sets generated wil be in sorted order.
+        Thus the index of the last found item_set is a lower bound on 
+        the index for the item_set in the current iteration
         """
-        for item_set in combinations(self.filter_infrequent(basket_set), self.k):
-            self.count(item_set)
+        filtered_basket = list(self.filter_infrequent(basket_set))
+        last_set = reversed(filtered_basket[:-self.k])
+        hi = bisect.bisect_left(self.set_list, last_set, hi=(self.size - 1))
+        prev_idx = 0
+        for item_set in combinations(filtered_basket, self.k):
+            idx = bisect.bisect_left(self.set_list, item_set, lo=prev_idx, hi=hi)
+            if self.set_list[idx] == item_set:
+                self.counts[idx] += 1
+            prec_idx = idx
 
     def frequent_items_collection(self, min_support, n_baskets):
         return self.from_sorted_items_iter_w_count(self.frequent_items(min_support, n_baskets), self.k)
 
     def frequent_items(self, min_support, n_baskets):
-        for item, count in zip(zip(*self.lists), self.counts):
+        for item, count in zip(self.set_list, self.counts):
             if count / n_baskets > min_support:
-                yield chain((count,), item)
+                yield count, item
 
     def to_partitioned_tuples(self, p):
         """
@@ -190,16 +137,16 @@ class AprioriCollection(object):
         psz = int(self.size / p) # partition size
         i = 0
         for j in range(p - 1):
-            yield self.k, tuple(l[i:i+psz] for l in self.lists), self.counts[i:i+psz], psz, self.in_lists
+            yield self.k, self.set_list[i:i+psz], self.counts[i:i+psz], psz, self.in_lists
             i += psz
-        yield self.k, tuple(l[i:] for l in self.lists), self.counts[i:], self.size-i, self.in_lists
+        yield self.k, self.set_list[i:], self.counts[i:], self.size-i, self.in_lists
 
     def to_tuple(self):
         """
         output tuple that can be used to recreate this collection
         :return:
         """
-        return self.k, self.lists, self.counts, self.size, self.in_lists
+        return self.k, self.set_list, self.counts, self.size, self.in_lists
 
     @classmethod
     def from_tuple(cls, tup_collection: tuple):
@@ -209,7 +156,19 @@ class AprioriCollection(object):
         :return: AprioriCollection
         """
         nc = cls(tup_collection[0])
-        nc.k, nc.lists, nc.counts, nc.size, nc.in_lists = tup_collection
+        nc.k, nc.set_list, nc.counts, nc.size, nc.in_lists = tup_collection
+        #nc.set_list = [AprioriSet(item) for item in set_list]
+        return nc
+
+    @classmethod
+    def from_collection_iter(cls, collections: Iterator):
+        nc = next(collections)
+        for next_nc in collections:
+            assert isinstance(next_nc, AprioriCollection)
+            nc.set_list.extend(next_nc.set_list)
+            nc.in_lists.update(next_nc.set_list)
+            nc.size += next_nc.size
+            nc.counts.extend(next_nc.counts)
         return nc
 
     @classmethod
@@ -221,50 +180,49 @@ class AprioriCollection(object):
         :return: AprioriCollection
         """
         nc = None
-        for k, lists, counts, size, in_lists in tuples:
+        for k, set_list, counts, size, in_lists in tuples:
             if nc is None:
                 nc = cls(k)
-            for i, l in enumerate(lists):
-                nc.lists[i].extend(l)
+            nc.set_list.extend(set_list)
             nc.counts.extend(counts)
             nc.size += size
             nc.in_lists.update(in_lists)
         return nc
 
     @classmethod
-    def from_lists(cls, lists: tuple, k):
+    def from_lists(cls, lists: list, k):
         nc = cls(k)
-        nc.lists = lists
+        nc.set_list = lists
         nc.init_from_list()
         return nc
 
     @classmethod
     def from_sorted_items_iter(cls, items: Iterator, k):
         nc = cls(k)
-        nc.lists = tuple(zip(*items))
+        nc.set_list = list(items)
         nc.init_from_list()
         return nc
 
     @classmethod
-    def from_sorted_items_iter_w_count(cls, items: Iterator, k):
+    def from_sorted_items_iter_w_count(cls, count_items: Iterator, k):
         nc = cls(k)
-        #items = tuple(items)
-        count, *nc.lists = zip(*items)
-        nc.counts = count
+        count, set_list = zip(*count_items)
+        nc.counts = list(count)
+        nc.set_list = list(set_list)
         nc.init_from_list(reset_counts=False)
         return nc
 
     def init_from_list(self, reset_counts=True):
-        self.size = len(self.lists[0])
+        self.size = len(self.set_list)
         if reset_counts:
             self.reset_counts()
         self.build_in_lists()
 
     def build_in_lists(self):
-        self.in_lists = set(chain(*self.lists))
+        self.in_lists = set(chain(*self.set_list))
 
     def to_item_sets(self):
-        for item_set in zip(*self.lists):
+        for item_set in self.set_list:
             yield AprioriSet(item_set)
 
 

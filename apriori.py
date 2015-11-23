@@ -24,8 +24,33 @@ def subsets(arr):
     return chain(*[combinations(arr, i + 1) for i, a in enumerate(arr)])
 
 
+
+
+def prog_bar(maxval, message=''):
+    class Message(progressbar.Widget):
+        """Displays the current count."""
+        __slots__ = ('message',)
+        def __init__(self):
+            self.message = message
+
+        def __call__(self, msg):
+            self.message = msg
+            
+        def update(self, pbar):
+            return '\t' + self.message
+            
+    msg_widget = Message()
+    pb = progressbar.ProgressBar(maxval=(maxval), widgets=[progressbar.widgets.Percentage(), ' '
+                                                                  ' ', progressbar.widgets.Timer(),
+                                                                  '   ',
+                                                                  progressbar.widgets.ETA(),
+                                                                  msg_widget])
+    return pb, msg_widget
+    
+    
 def item_support_worker(transactions: list, minSupport, collection_tuple: tuple):
     collect = AprioriCollection.from_tuple(collection_tuple)
+    del collection_tuple
     assert isinstance(collect, AprioriCollection)
     collect.build_in_lists()
 
@@ -34,7 +59,8 @@ def item_support_worker(transactions: list, minSupport, collection_tuple: tuple)
     freq_collect = collect.frequent_items_collection(minSupport, len(transactions))
 
     assert isinstance(freq_collect, AprioriCollection)
-    return freq_collect.to_tuple()
+    return freq_collect
+    #return freq_collect.to_tuple()
 
 
 def grouper(iterable, n, fillvalue=None):
@@ -48,27 +74,58 @@ def returnItemsWithMinSupport(item_set: AprioriCollection, transactions, min_sup
        of the itemSet each of whose elements satisfies the minimum support"""
         n_workers = 4
 
+        MP = True
         def workload_partition():
-            #p = Pool(n_workers)
-            item_gen = item_set.to_partitioned_tuples(n_workers)
-            for items_sub_collect in map(partial(item_support_worker, transactions, min_support), item_gen):
+            if MP:
+                p = Pool(n_workers)
+                _map = p.map
+            else:
+                _map = map
+            item_gen = item_set.to_partitioned_tuples(n_workers * 3)
+            pb, msg = prog_bar(n_workers * 3, 'counting baskets')
+            pb.start()
+            for i, items_sub_collect in enumerate(_map(partial(item_support_worker, transactions, min_support), item_gen)):
                 #assert isinstance(items_sub_collect, AprioriCollection)
+                pb.update(i)
                 yield items_sub_collect
-            #p.close()
-        new_collect = AprioriCollection.from_tuples(workload_partition())
+            if MP:
+                p.close()
+            pb.finish()
+        new_collect = AprioriCollection.from_collection_iter(workload_partition())
         return new_collect
 
 compl_time_ratios = list()
 
 
+def merge_worker(merge_collections, msg):
+    ii = 0
+    count = 0
+    for i in range(len(merge_collections)):
+        while len(merge_collections[i]) > 1:
+            # pop 2 collections from i and append result to i + 1
+            merge_collections[i + 1].append(merge_collections[i].pop().merge(merge_collections[i].pop()))
+            ii +=1
+        count += len(merge_collections[i])
+    msg('merged {0} times'.format(ii)) 
+    return count
+    
+    
 def setGenerator(collection, length: int):
+    l = collection.size
     n_workers = 4
+    chunk_sz = 32768
+    chunks = int(2 ** math.ceil(math.log2(l / chunk_sz)))
+
     set_queue = Queue()
-    filtered_sets_queue = Queue(maxsize=(n_workers+1))
+    filtered_sets_queue = Queue()#maxsize=(n_workers+1))
     item_list = list(collection.to_item_sets())
+
     def worker():
         local_set = AprioriCollection(length)
         while True:
+            if local_set.size >= chunk_sz:
+                filtered_sets_queue.put(local_set)
+                local_set = AprioriCollection(length)
             g = set_queue.get()
             if g is StopIteration:
                 break
@@ -77,62 +134,72 @@ def setGenerator(collection, length: int):
             for i in item_list[:j]:
                 _set.union(i, local_set)
 
-        filtered_sets_queue.put(local_set.to_tuple())
+        filtered_sets_queue.put(local_set)
+        filtered_sets_queue.put(StopIteration)
 
-    l = collection.size
+    
     compl = l ** 2 * math.log(length - 1) * (length - 1)
     if compl_time_ratios:
         t_est = compl / (1+compl_time_ratios[-1]) /2
     else:
         t_est = 0
     print('Generating sets of length {0} with {1} starting sets'.format(length, l))
-    print('\tComplexity: {0:.0}\n\tEstimated completion time: {1:3.0f}'.format(compl, t_est))
+    print('\tComplexity: {0:.0}\n\tEstimated completion time: {1:3.0f}\n\tworkers: {2}\n\tchunks: {3}'.format(compl, t_est, n_workers, chunks))
     t_start = time.time()
     #pb = maxval=len(itemSet))
-    pb = progressbar.ProgressBar(maxval=(l + n_workers), widgets=[progressbar.widgets.Percentage(), ' '
-                                                                                                    ' ', progressbar.widgets.Timer(),
-                                                                  '   ',
-                                                                  progressbar.widgets.ETA()])
-    MP = False
+    pb, msg = prog_bar(l + chunks + n_workers, 'initializing...')
+    MP = True
 
     if MP:
         p = deque(Process(target=worker) for _ in range(n_workers))
         for proc in p:
             proc.start()
+    else:
+        n_workers = 1
 
     for j in enumerate(item_list):
         set_queue.put(j)
 
     pb.start()
+    msg('started')
     pb.update(l - set_queue.qsize())
 
     for _ in range(n_workers):
         set_queue.put(StopIteration)
 
-    if MP:
-        while filtered_sets_queue.qsize() < n_workers:
-            pb.update(l - set_queue.qsize() + n_workers)
-            time.sleep(.1)
-    else:
+    if not MP:
         worker()
 
     merge_collections = defaultdict(list)
-    merge_collections[0].append(AprioriCollection.from_tuple(filtered_sets_queue.get()))
+
+    sentinels = 0
+    results = 0
+    while sentinels < n_workers:
+        result = filtered_sets_queue.get()
+        msg('{0} results received'.format(results))
+        pb.update(l - set_queue.qsize())
+        if result is StopIteration:
+            sentinels += 1
+        else:
+            results += 1
+            merge_collections[0].append(result)
+            merge_worker(merge_collections, msg)
+            pb.update(l - set_queue.qsize())
 
     if MP:
-        pb.update(l + 1)
-        for i in range(n_workers - 1):
-            merge_collections[0].append(AprioriCollection.from_tuple(filtered_sets_queue.get()))
-
         for proc in p:
             assert isinstance(proc, Process)
             proc.join()
 
+    
+    collect_siz = merge_worker(merge_collections, msg)
+    chunks = collect_siz
+    pb.maxval = l + collect_siz
     merge_idx = 0
     current_merge = list()
-    collect_siz = len(merge_collections[0])
+    msg('merging {0} collections'.format(collect_siz))
     while True:
-        pb.update(l + collect_siz)
+        pb.update(l + chunks - collect_siz)
         while len(current_merge) != 2:
             if collect_siz == 0:
                 break
@@ -148,20 +215,11 @@ def setGenerator(collection, length: int):
             collect_siz += 1
         else:
             full_set = current_merge[0]
+            full_set.size = len(full_set.set_list)
             full_set.reset_counts()
+
             break
     pb.finish()
-
-    # for i in progressbar.ProgressBar(maxval=iterations)(range(iterations)):
-    #     next_comb = [next(it) for j in range(chunk_sz)]
-    #     for gen in p.map(worker, next_comb):
-    #         yield from gen
-    #     p.terminate()
-    #
-    # p = Pool(3)
-    # for gen in p.map(worker, it):
-    #     yield from gen
-    # p.terminate()
     t_delta = time.time() - t_start
     compl_time_ratios.append(compl / t_delta)
     print('\nDone in {0:3.2f} seconds. complexity/time ratio: {1:.0f}\n'.format(t_delta, compl_time_ratios[-1]))
@@ -183,12 +241,9 @@ def getItemSetTransactionList(data_iterator):
     return itemSet, transactionList
 
 
-def getItemSetTransactionList(df):
-    assert isinstance(df, DataFrame)
+def getItemSetTransactionList(df: DataFrame):
     transactions = [tuple(sorted(int(el) for el in df.index[df[col] == 1].tolist())) for col in df.columns]
-
-    item_set = AprioriCollection.from_lists((sorted(int(el) for el in df.index.tolist()),), 1)
-    #item_set = set(AprioriSet((int(el),)) for el in df.index.tolist())
+    item_set = AprioriCollection.from_lists(sorted(AprioriSet((int(el),)) for el in df.index.tolist()), 1)
     return item_set, transactions
 
 

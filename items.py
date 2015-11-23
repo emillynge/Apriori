@@ -110,15 +110,28 @@ class AprioriCollection(object):
         Thus the index of the last found item_set is a lower bound on 
         the index for the item_set in the current iteration
         """
+
+
         filtered_basket = list(self.filter_infrequent(basket_set))
-        last_set = reversed(filtered_basket[:-self.k])
-        hi = bisect.bisect_left(self.set_list, last_set, hi=(self.size - 1))
+        last_set = AprioriSet(filtered_basket[-self.k:])
+        max_hi = bisect.bisect_left(self.set_list, last_set, hi=(self.size - 1))
+        idx = 0
         prev_idx = 0
+        window = 20
+
+        def get_idx(item_set, window, lo):
+            hi = min(lo + window, max_hi)
+            return bisect.bisect_right(self.set_list, item_set, lo=idx, hi=hi)
+
         for item_set in combinations(filtered_basket, self.k):
-            idx = bisect.bisect_left(self.set_list, item_set, lo=prev_idx, hi=hi)
-            if self.set_list[idx] == item_set:
-                self.counts[idx] += 1
-            prec_idx = idx
+            idx = get_idx(item_set, window, idx)
+            while self.set_list[idx] < item_set:
+                window *= 2
+                idx = get_idx(item_set, window, idx)
+
+            if self.set_list[idx-1] == item_set:
+                self.counts[idx-1] += 1
+            window, prev_idx = (idx - prev_idx + window * 3) // 4, idx
 
     def frequent_items_collection(self, min_support, n_baskets):
         return self.from_sorted_items_iter_w_count(self.frequent_items(min_support, n_baskets), self.k)

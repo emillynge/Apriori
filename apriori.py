@@ -10,7 +10,7 @@ Usage:
 import sys
 from operator import itemgetter
 from itertools import chain, combinations, combinations_with_replacement, zip_longest
-from collections import defaultdict, deque, Sequence
+from collections import defaultdict, deque, Sequence, Generator
 import memory_profiler
 import objgraph
 
@@ -164,7 +164,7 @@ def setGenerator(collection: AprioriCollection):
     item_list = list(collection.to_item_sets())
 
     def worker():
-        local_sets = list()
+        local_sets = [AprioriCollection(length)]
         while True:
             g = set_queue.get()
             if g is StopIteration:
@@ -178,7 +178,6 @@ def setGenerator(collection: AprioriCollection):
             while len(local_sets) > 1 and local_sets[-1].size >= local_sets[-2].size:
                 #print(local_sets[-1].size, local_sets[-2].size)
                 local_sets.append(local_sets.pop().merge(local_sets.pop()))
-
         while len(local_sets) > 1:
             local_sets.append(local_sets.pop().merge(local_sets.pop()))
 
@@ -285,10 +284,13 @@ def getItemSetTransactionListFromRecord(data_iterator):
     transactionList = list()
     itemSet = set()
     for record in data_iterator:
-        transaction = frozenset(record)
+        transaction = sorted(str(item) for item in record)
         transactionList.append(transaction)
         for item in transaction:
-            itemSet.add(frozenset([item]))              # Generate 1-itemSets
+            itemSet.add((item,))
+
+    itemSet = AprioriCollection.from_lists(sorted(list(itemSet)), 1)
+
     return transactionList, itemSet
 
 
@@ -309,7 +311,7 @@ def runApriori(data, min_support, minConfidence, max_k=None, min_k=2, fp=None):
     """
     if isinstance(data, DataFrame):
         large_set = AprioriSession.from_scratch(*getItemSetTransactionListFromDataFrame(data), fp=fp)
-    elif isinstance(data, Sequence):
+    elif isinstance(data, Generator):
         large_set = AprioriSession.from_scratch(*getItemSetTransactionListFromRecord(data), fp=fp)
     else:
         large_set = AprioriSession.from_fp(data, fp=fp)
@@ -388,9 +390,7 @@ def dataFromFile(fname):
                 record = frozenset(line.split(','))
                 yield record
 
-
-if __name__ == "__main__":
-
+def main():
     optparser = OptionParser()
     optparser.add_option('-f', '--inputFile',
                          dest='input',
@@ -424,3 +424,6 @@ if __name__ == "__main__":
     items, rules = runApriori(inFile, minSupport, minConfidence)
 
     printResults(items, rules)
+
+if __name__ == "__main__":
+    main()

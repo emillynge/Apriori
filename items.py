@@ -372,8 +372,16 @@ class AprioriCounter(list):
             yield count
             # No more basket sets left. the rest of the items has zero count
             for j in range(i + 1, self.end):
-                yield 0          
-                
+                yield 0
+
+    @staticmethod
+    def init_baskets(basket_generators):
+        for gen in basket_generators:
+            try:
+                yield [gen, next(gen)]
+            except StopIteration:
+                pass
+
     def count_baskets(self, collect, basket_sets):
         """
         Add basket items sets of size k to counts
@@ -387,7 +395,7 @@ class AprioriCounter(list):
         basket_generators = list(combinations(collect.filter_infrequent(basket_set,
                                                                         interval=(self.start, self.end)),
                                               collect.k) for basket_set in basket_sets)
-        baskets = [[gen, tuple(-1 for _ in range(collect.k))] for gen in basket_generators]
+        baskets = list(self.init_baskets(basket_generators))
 
         for i, item_set in enumerate(collect.set_list[self.start:self.end]):
             rm_list = []

@@ -86,26 +86,36 @@ class AprioriCollection(object):
     def _merge_generator(self, lists1: list, lists2:list):
         gen1 = iter(lists1)
         gen2 = iter(lists2)
+
+        it1, it2 = None, None
         try:
             it1 = next(gen1)
             it2 = next(gen2)
             while True:
                 try:
                     if it1 < it2:    # all these may raise StopIteration
-                        yield it1
+                        it1 = yield it1     # yield returns None to it1
                         it1 = next(gen1)
 
                     elif it2 < it1:
-                        yield it2
+                        it2 = yield it2     # yield returns None to it2
                         it2 = next(gen2)
 
                     else:
-                        yield it1
-                        it1, it2 = next(gen1), next(gen2)
+                        it1 = yield it1     # yield returns None to it1
+                        it2 = None
+                        it1 = next(gen1)
+                        it2 = next(gen2)
+
                 except StopIteration:
                     break
         except StopIteration:
             pass
+
+        if it1 is not None:
+            yield it1
+        elif it2 is not None:
+            yield it2
 
         # one of the iterators will be empty
         yield from gen1

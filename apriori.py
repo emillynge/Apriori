@@ -52,10 +52,9 @@ def grouper(iterable, n, fillvalue=None):
     return zip_longest(*args, fillvalue=fillvalue)
 
 
-def returnItemsWithMinSupport(collect: AprioriCollection, transactions, min_support):
+def returnItemsWithMinSupport(collect: AprioriCollection, transactions, min_support, n_workers):
     """calculates the support for items in the itemSet and returns a subset
     of the itemSet each of whose elements satisfies the minimum support"""
-    n_workers = 4
     chunk_siz = max(5000, (collect.size // n_workers) // 25)
 
     MP = True
@@ -151,11 +150,10 @@ def merge_worker(merge_collections, msg):
     return count
 
 
-def setGenerator(collection: AprioriCollection):
+def setGenerator(collection: AprioriCollection, n_workers):
     length = collection.k + 1
     MP = True
     l = collection.size
-    n_workers = 4
 
     if not MP:
         n_workers = 1
@@ -279,9 +277,9 @@ def setGenerator(collection: AprioriCollection):
     return full_set
 
 
-def join_set(itemSet):
+def join_set(itemSet, n_workers):
     """Join a set with itself and returns the n-element itemsets"""
-    return setGenerator(itemSet)
+    return setGenerator(itemSet, n_workers)
 
 
 def getItemSetTransactionListFromRecord(data_iterator):
@@ -304,7 +302,7 @@ def getItemSetTransactionListFromDataFrame(df: DataFrame):
     return transactions, item_set
 
 
-def runApriori(data, min_support, minConfidence, max_k=None, fp=None):
+def runApriori(data, min_support, minConfidence, max_k=None, fp=None, n_workers=4):
     """
     run the apriori algorithm. data_iter is a record iterator
     Return both:
@@ -326,11 +324,12 @@ def runApriori(data, min_support, minConfidence, max_k=None, fp=None):
 
         try:
             if last_collect.counts:
-                large_set[last_collect.k + 1] = join_set(last_collect)
+                large_set[last_collect.k + 1] = join_set(last_collect, n_workers)
             else:
                 returnItemsWithMinSupport(last_collect,
                                           large_set.transactions,
-                                          min_support)
+                                          min_support,
+                                          n_workers)
                 large_set.save()
 
             last_collect = large_set.last_collection()

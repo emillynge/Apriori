@@ -1,11 +1,9 @@
 import bisect
 from itertools import chain, combinations
-from collections import Sequence, Iterator, OrderedDict, UserList, namedtuple
+from collections import Sequence, Iterator, OrderedDict
 from operator import itemgetter
-import memory_profiler
 import heapq
 import json
-from abc import ABCMeta
 
 
 class AprioriSet(tuple):
@@ -83,7 +81,8 @@ class AprioriCollection(object):
         #self.in_lists.update(other_collection.in_lists)
         return self
 
-    def _merge_generator(self, lists1: list, lists2:list):
+    @staticmethod
+    def _merge_generator(lists1: list, lists2:list):
         gen1 = iter(lists1)
         gen2 = iter(lists2)
 

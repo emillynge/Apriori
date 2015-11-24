@@ -9,46 +9,48 @@ Usage:
 
 import sys
 from operator import itemgetter
-from itertools import chain, combinations, combinations_with_replacement, zip_longest
-from collections import defaultdict, deque, Sequence, Iterator
-import memory_profiler
-import objgraph
-
+from itertools import zip_longest
+from collections import defaultdict, deque
 from pandas import DataFrame
 from optparse import OptionParser
-from functools import partial
+
 import progressbar
 import math
 import time
-from multiprocessing import Pool, Process, Queue, queues
+from multiprocessing import Process, Queue, queues
 from .items import AprioriSet, AprioriCollection, AprioriCounter, AprioriSession
+
 
 def prog_bar(maxval, message=''):
     class Message(progressbar.Widget):
         """Displays the current count."""
         __slots__ = ('message',)
+
         def __init__(self):
             self.message = message
 
         def __call__(self, msg):
             self.message = msg
-            
+
         def update(self, pbar):
             return '\t' + self.message
-            
+
     msg_widget = Message()
-    pb = progressbar.ProgressBar(maxval=(maxval), widgets=[progressbar.widgets.Percentage(), ' '
-                                                                  ' ', progressbar.widgets.Timer(),
-                                                                  '   ',
-                                                                  progressbar.widgets.ETA(),
-                                                                  msg_widget])
+    pb = progressbar.ProgressBar(maxval=maxval, widgets=[progressbar.widgets.Percentage(), ' '
+                                                                                             ' ',
+                                                           progressbar.widgets.Timer(),
+                                                           '   ',
+                                                           progressbar.widgets.ETA(),
+                                                           msg_widget])
     return pb, msg_widget
+
 
 def grouper(iterable, n, fillvalue=None):
     "Collect data into fixed-length chunks or blocks"
     # grouper('ABCDEFG', 3, 'x') --> ABC DEF Gxx"
     args = [iter(iterable)] * n
     return zip_longest(*args, fillvalue=fillvalue)
+
 
 def returnItemsWithMinSupport(collect: AprioriCollection, transactions, min_support):
     """calculates the support for items in the itemSet and returns a subset
@@ -83,7 +85,7 @@ def returnItemsWithMinSupport(collect: AprioriCollection, transactions, min_supp
         intervals_q.put((start, stop, i))
         n_chunks += 1
         start = stop
-    intervals_q.put((start, collect.size, i+1))
+    intervals_q.put((start, collect.size, i + 1))
 
     for _ in range(n_workers):
         intervals_q.put(StopIteration)
@@ -117,9 +119,9 @@ def returnItemsWithMinSupport(collect: AprioriCollection, transactions, min_supp
         while sentinels < n_workers:
             pb.update(n_chunks - intervals_q.qsize() + n_workers)
             get_res()
-            #print('##########################')
-            #objgraph.show_growth()
-            #msg('memory: {0}'.format(mem))
+            # print('##########################')
+            # objgraph.show_growth()
+            # msg('memory: {0}'.format(mem))
             while i in result_cache:
                 res = result_cache.pop(i)
                 if res:
@@ -129,10 +131,11 @@ def returnItemsWithMinSupport(collect: AprioriCollection, transactions, min_supp
         if MP:
             for proc in p:
                 proc.join()
+
     collect.filter_from_counters(get_results(), min_support, len(transactions))
 
-compl_time_ratios = list()
 
+compl_time_ratios = list()
 
 
 def merge_worker(merge_collections, msg):
@@ -142,12 +145,12 @@ def merge_worker(merge_collections, msg):
         while len(merge_collections[i]) > 1:
             # pop 2 collections from i and append result to i + 1
             merge_collections[i + 1].append(merge_collections[i].pop().merge(merge_collections[i].pop()))
-            ii +=1
+            ii += 1
         count += len(merge_collections[i])
-    msg('merged {0} times'.format(ii)) 
+    msg('merged {0} times'.format(ii))
     return count
-    
-    
+
+
 def setGenerator(collection: AprioriCollection):
     length = collection.k + 1
     MP = True
@@ -160,7 +163,7 @@ def setGenerator(collection: AprioriCollection):
     chunks = (l // chunk_sz) + n_workers
 
     set_queue = Queue()
-    filtered_sets_queue = Queue()#maxsize=(n_workers+1))
+    filtered_sets_queue = Queue()  # maxsize=(n_workers+1))
     item_list = list(collection.to_item_sets())
 
     def worker():
@@ -176,7 +179,7 @@ def setGenerator(collection: AprioriCollection):
                 _set.union(i, _local_set)
             local_sets.append(_local_set)
             while len(local_sets) > 1 and local_sets[-1].size >= local_sets[-2].size:
-                #print(local_sets[-1].size, local_sets[-2].size)
+                # print(local_sets[-1].size, local_sets[-2].size)
                 local_sets.append(local_sets.pop().merge(local_sets.pop()))
         while len(local_sets) > 1:
             local_sets.append(local_sets.pop().merge(local_sets.pop()))
@@ -184,24 +187,24 @@ def setGenerator(collection: AprioriCollection):
         filtered_sets_queue.put(local_sets.pop())
         filtered_sets_queue.put(StopIteration)
 
-    
     compl = l ** 2 * math.log(length - 1) * (length - 1)
     if compl_time_ratios:
-        t_est = compl / (1+compl_time_ratios[-1]) /2
+        t_est = compl / (1 + compl_time_ratios[-1]) / 2
     else:
         t_est = 0
     print('Generating sets of length {0} with {1} starting sets'.format(length, l))
-    print('\tComplexity: {0:.0}\n\tEstimated completion time: {1:3.0f}\n\tworkers: {2}\n\tchunks: {3}'.format(compl, t_est, n_workers, chunks))
+    print('\tComplexity: {0:.0}\n\tEstimated completion time: {1:3.0f}\n\tworkers: {2}\n\tchunks: {3}'.format(compl,
+                                                                                                              t_est,
+                                                                                                              n_workers,
+                                                                                                              chunks))
     t_start = time.time()
-    #pb = maxval=len(itemSet))
+    # pb = maxval=len(itemSet))
     pb, msg = prog_bar((l ** 2) // 2 + chunks + n_workers, 'initializing...')
-
 
     if MP:
         p = deque(Process(target=worker) for _ in range(n_workers))
         for proc in p:
             proc.start()
-
 
     for j in enumerate(item_list):
         set_queue.put(j)
@@ -241,7 +244,6 @@ def setGenerator(collection: AprioriCollection):
             assert isinstance(proc, Process)
             proc.join()
 
-
     collect_siz = merge_worker(merge_collections, msg)
     chunks = collect_siz
     pb.maxval = l + collect_siz
@@ -271,13 +273,15 @@ def setGenerator(collection: AprioriCollection):
     t_delta = time.time() - t_start
     compl_time_ratios.append(compl / t_delta)
     print('\nDone in {0:3.2f} seconds. complexity/time ratio: {1:.0f}\n\tproduced sets: {2}'.format(t_delta,
-                                                                                                    compl_time_ratios[-1],
-                                                                                                    full_set.size),)
+                                                                                                    compl_time_ratios[
+                                                                                                        -1],
+                                                                                                    full_set.size), )
     return full_set
 
+
 def join_set(itemSet):
-        """Join a set with itself and returns the n-element itemsets"""
-        return setGenerator(itemSet)
+    """Join a set with itself and returns the n-element itemsets"""
+    return setGenerator(itemSet)
 
 
 def getItemSetTransactionListFromRecord(data_iterator):
@@ -300,9 +304,7 @@ def getItemSetTransactionListFromDataFrame(df: DataFrame):
     return transactions, item_set
 
 
-
-
-def runApriori(data, min_support, minConfidence, max_k=None, min_k=2, fp=None):
+def runApriori(data, min_support, minConfidence, max_k=None, fp=None):
     """
     run the apriori algorithm. data_iter is a record iterator
     Return both:
@@ -317,12 +319,6 @@ def runApriori(data, min_support, minConfidence, max_k=None, min_k=2, fp=None):
         large_set = AprioriSession.from_fp(data, fp=fp)
 
     assert isinstance(large_set, AprioriSession)
-    # Global dictionary which stores (key=n-itemSets,value=support)
-    # which satisfy minSupport
-
-    assocRules = dict()
-    # Dictionary which stores Association Rules
-
     last_collect = large_set.last_collection()
     while last_collect.size != 0:
         if max_k and max_k in large_set and large_set[max_k].counts:
@@ -336,7 +332,6 @@ def runApriori(data, min_support, minConfidence, max_k=None, min_k=2, fp=None):
                                           large_set.transactions,
                                           min_support)
                 large_set.save()
-
 
             last_collect = large_set.last_collection()
         except KeyboardInterrupt:
@@ -368,7 +363,7 @@ def runApriori(data, min_support, minConfidence, max_k=None, min_k=2, fp=None):
                 _k = len(subset)
                 confidence = count / large_set[_k].get_count(subset)
                 if confidence >= minConfidence:
-                        toRetRules.append(((subset, remain), confidence))
+                    toRetRules.append(((subset, remain), confidence))
     return toRetItems, toRetRules
 
 
@@ -383,12 +378,13 @@ def printResults(items, rules):
 
 
 def dataFromFile(fname):
-        """Function which reads from the file and yields a generator"""
-        file_iter = open(fname, 'rU')
-        for line in file_iter:
-                line = line.strip().rstrip(',')                         # Remove trailing comma
-                record = frozenset(line.split(','))
-                yield record
+    """Function which reads from the file and yields a generator"""
+    file_iter = open(fname, 'rU')
+    for line in file_iter:
+        line = line.strip().rstrip(',')  # Remove trailing comma
+        record = frozenset(line.split(','))
+        yield record
+
 
 def main():
     optparser = OptionParser()
@@ -411,12 +407,12 @@ def main():
 
     inFile = None
     if options.input is None:
-            inFile = sys.stdin
+        inFile = sys.stdin
     elif options.input is not None:
-            inFile = dataFromFile(options.input)
+        inFile = dataFromFile(options.input)
     else:
-            print('No dataset filename specified, system with exit\n')
-            sys.exit('System will exit')
+        print('No dataset filename specified, system with exit\n')
+        sys.exit('System will exit')
 
     minSupport = options.minS
     minConfidence = options.minC
@@ -424,6 +420,7 @@ def main():
     items, rules = runApriori(inFile, minSupport, minConfidence)
 
     printResults(items, rules)
+
 
 if __name__ == "__main__":
     main()

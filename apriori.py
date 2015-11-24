@@ -10,7 +10,7 @@ Usage:
 import sys
 from operator import itemgetter
 from itertools import chain, combinations, combinations_with_replacement, zip_longest
-from collections import defaultdict, deque, Sequence, Generator
+from collections import defaultdict, deque, Sequence, Iterator
 import memory_profiler
 import objgraph
 
@@ -311,7 +311,7 @@ def runApriori(data, min_support, minConfidence, max_k=None, min_k=2, fp=None):
     """
     if isinstance(data, DataFrame):
         large_set = AprioriSession.from_scratch(*getItemSetTransactionListFromDataFrame(data), fp=fp)
-    elif isinstance(data, Generator):
+    elif hasattr(data, 'send'):
         large_set = AprioriSession.from_scratch(*getItemSetTransactionListFromRecord(data), fp=fp)
     else:
         large_set = AprioriSession.from_fp(data, fp=fp)

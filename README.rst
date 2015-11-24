@@ -2,7 +2,8 @@ Python 3 Implementation of Apriori Algorithm
 ==========================================
 This project is a fork of https://github.com/asaini/Apriori
 
-Changes are:
+Changes to original project
+---------------------------
 1. Project is now in python 3 package
 2. Complete rewrite of data structure for speed and memory efficiency (find these changes in the .items)
 3. Supports 3 types of input: file pointer to a previous session, pandas Data frame and the original

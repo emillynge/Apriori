@@ -164,20 +164,25 @@ def setGenerator(collection: AprioriCollection):
     item_list = list(collection.to_item_sets())
 
     def worker():
-        local_set = AprioriCollection(length)
+        local_sets = list()
         while True:
-            if local_set.size >= chunk_sz:
-                filtered_sets_queue.put(local_set)
-                local_set = AprioriCollection(length)
             g = set_queue.get()
             if g is StopIteration:
                 break
             j, _set = g
             assert isinstance(_set, AprioriSet)
+            _local_set = AprioriCollection(length)
             for i in item_list[:j]:
-                _set.union(i, local_set)
+                _set.union(i, _local_set)
+            local_sets.append(_local_set)
+            while len(local_sets) > 1 and local_sets[-1].size >= local_sets[-2].size:
+                #print(local_sets[-1].size, local_sets[-2].size)
+                local_sets.append(local_sets.pop().merge(local_sets.pop()))
 
-        filtered_sets_queue.put(local_set)
+        while len(local_sets) > 1:
+            local_sets.append(local_sets.pop().merge(local_sets.pop()))
+
+        filtered_sets_queue.put(local_sets.pop())
         filtered_sets_queue.put(StopIteration)
 
     
@@ -190,7 +195,7 @@ def setGenerator(collection: AprioriCollection):
     print('\tComplexity: {0:.0}\n\tEstimated completion time: {1:3.0f}\n\tworkers: {2}\n\tchunks: {3}'.format(compl, t_est, n_workers, chunks))
     t_start = time.time()
     #pb = maxval=len(itemSet))
-    pb, msg = prog_bar(l + chunks + n_workers, 'initializing...')
+    pb, msg = prog_bar((l ** 2) // 2 + chunks + n_workers, 'initializing...')
 
 
     if MP:
@@ -220,10 +225,10 @@ def setGenerator(collection: AprioriCollection):
         try:
             result = filtered_sets_queue.get(timeout=5)
         except queues.Empty:
-            pb.update(l - set_queue.qsize())
+            pb.update((l - set_queue.qsize()) ** 2 // 2)
             continue
         msg('{0} results received'.format(results))
-        pb.update(l - set_queue.qsize())
+        pb.update((l - set_queue.qsize()) ** 2 // 2)
         if result is StopIteration:
             sentinels += 1
         else:

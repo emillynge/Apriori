@@ -11,7 +11,7 @@ from abc import ABCMeta
 class AprioriSet(tuple):
     __slots__ = []
 
-    def union(self, other_set: tuple, collect_set: set):
+    def union(self, other_set: tuple, collect_set):
         """
         union between two AprioriSets of size k, that adds result into a collection if union yields a set of size k+1
         :param other_set: AprioriSet of size k
@@ -26,7 +26,7 @@ class AprioriSet(tuple):
                 el_diff = idx, el2
 
         if el_diff is not None:
-            collect_set.add(AprioriSet(chain(self[:el_diff[0]], (el_diff[1],), self[el_diff[0]:])))
+            collect_set.append(AprioriSet(chain(self[:el_diff[0]], (el_diff[1],), self[el_diff[0]:])))
 
     def difference(self, subset):
         it1, it2 = iter(self), iter(subset)
@@ -61,6 +61,11 @@ class AprioriCollection(object):
     def _index(self, find_set: AprioriSet):
         return bisect.bisect_left(self.set_list, find_set)
 
+    def append(self, new_set: AprioriSet):
+        self.set_list.append(new_set)
+        self.size += 1
+        #self.in_lists.update(iter(new_set))
+
     def add(self, new_set: AprioriSet):
         idx = self._index(new_set)
         if idx == self.size or self.set_list[idx] != new_set:
@@ -74,31 +79,33 @@ class AprioriCollection(object):
     def merge(self, other_collection):
         assert isinstance(other_collection, AprioriCollection)
         self.set_list = list(self._merge_generator(self.set_list, other_collection.set_list))
-        self.size = len(self.set_list[0])
-        self.in_lists.update(other_collection.in_lists)
+        self.size = len(self.set_list)
+        #self.in_lists.update(other_collection.in_lists)
         return self
 
     def _merge_generator(self, lists1: list, lists2:list):
         gen1 = iter(lists1)
         gen2 = iter(lists2)
-        it1 = next(gen1)
-        it2 = next(gen2)
+        try:
+            it1 = next(gen1)
+            it2 = next(gen2)
+            while True:
+                try:
+                    if it1 < it2:    # all these may raise StopIteration
+                        yield it1
+                        it1 = next(gen1)
 
-        while True:
-            try:
-                if it1 < it2:    # all these may raise StopIteration
-                    yield it1
-                    it1 = next(gen1)
+                    elif it2 < it1:
+                        yield it2
+                        it2 = next(gen2)
 
-                elif it2 < it1:
-                    yield it2
-                    it2 = next(gen2)
-
-                else:
-                    yield it1
-                    it1, it2 = next(gen1), next(gen2)
-            except StopIteration:
-                break
+                    else:
+                        yield it1
+                        it1, it2 = next(gen1), next(gen2)
+                except StopIteration:
+                    break
+        except StopIteration:
+            pass
 
         # one of the iterators will be empty
         yield from gen1
@@ -118,14 +125,19 @@ class AprioriCollection(object):
         if idx != self.size and self.set_list[idx] == count_set:
             self.counts[idx] += 1
 
-    def filter_infrequent(self, basket_set: Sequence):
+    def filter_infrequent(self, basket_set: Sequence, interval=None):
         """
         yield items in basket that is contained in lists
         :param basket_set: sequence of items
         :return:
         """
+        if interval:
+            in_lists = set(chain(*self.set_list[interval[0]:interval[1]]))
+        else:
+            in_lists = self.in_lists
+
         for i in basket_set:
-            if i in self.in_lists:
+            if i in in_lists:
                 yield i
 
     def count_basket2(self, basket_set):
@@ -291,33 +303,14 @@ class AprioriCollection(object):
             yield AprioriSet(item_set)
 
 
-class AprioriBasketsSubsets(metaclass=ABCMeta):
+class AprioriBasketsSubsets(list):
+    __slots__ = ['gen']
     def __init__(self, basket: list, collect: AprioriCollection):
         self.gen = combinations(collect.filter_infrequent(basket), collect.k)
-        self.subset = next(self.gen)
+        super(AprioriBasketsSubsets, self).__init__(next(self.gen))
     
     def next(self):
-        self.subset = next(self.gen)
-
-    def __le__(self, other):
-        return other >= self.subset
-
-    def __lt__(self, other):
-        return other > self.subset
-
-    def __ge__(self, other):
-        return other <= self.subset
-
-    def __gt__(self, other):
-        return other < self.subset
-
-    def __eq__(self, other):
-        return other == self.subset
-
-    def __repr__(self):
-        return repr(self.subset)
-
-AprioriBasketsSubsets.register(tuple)
+        super(AprioriBasketsSubsets, self).__init__(next(self.gen))
 
 class AprioriCounter(list):
     __slots__ = ['collect', 'min_support', 'start', 'end']
@@ -352,14 +345,23 @@ class AprioriCounter(list):
             return heapq.heappushpop(basket_generators, current_basket)
             
         try:
-            for i, item_set in enumerate(collect.set_list[self.start:self.end]):
+            for i, _item_set in enumerate(collect.set_list[self.start:self.end]):
+                item_set = list(_item_set)
                 if min_basket > item_set:
                     yield 0
                     continue
                     
                 count = 0
                 while min_basket < item_set:
-                    min_basket = switch_basket(min_basket)
+                    min_basket.next()
+                    while min_basket < item_set:
+                        min_basket.next()
+
+                    if min_basket == item_set:
+                        count += 1
+                        min_basket = switch_basket(min_basket)
+                    else:
+                        min_basket = heapq.heapreplace(basket_generators, min_basket)
                 
                 while min_basket == item_set:
                     count += 1
@@ -382,7 +384,8 @@ class AprioriCounter(list):
         the index for the item_set in the current iteration
         """
         n_baskets = len(basket_sets)
-        basket_generators = list(combinations(collect.filter_infrequent(basket_set),
+        basket_generators = list(combinations(collect.filter_infrequent(basket_set,
+                                                                        interval=(self.start, self.end)),
                                               collect.k) for basket_set in basket_sets)
         baskets = [[gen, tuple(-1 for _ in range(collect.k))] for gen in basket_generators]
 

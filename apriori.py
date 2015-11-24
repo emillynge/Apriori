@@ -41,7 +41,7 @@ def prog_bar(maxval, message=''):
                                                            progressbar.widgets.Timer(),
                                                            '   ',
                                                            progressbar.widgets.ETA(),
-                                                           msg_widget])
+                                                           msg_widget], fd=sys.stdout)
     return pb, msg_widget
 
 

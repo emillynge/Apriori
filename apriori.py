@@ -10,21 +10,18 @@ Usage:
 import sys
 from operator import itemgetter
 from itertools import chain, combinations, combinations_with_replacement, zip_longest
-from collections import defaultdict, deque
+from collections import defaultdict, deque, Sequence
+import memory_profiler
+import objgraph
+
 from pandas import DataFrame
 from optparse import OptionParser
 from functools import partial
 import progressbar
 import math
 import time
-from multiprocessing import Pool, Process, Queue
-from .items import AprioriSet, AprioriCollection
-def subsets(arr):
-    """ Returns non empty subsets of arr"""
-    return chain(*[combinations(arr, i + 1) for i, a in enumerate(arr)])
-
-
-
+from multiprocessing import Pool, Process, Queue, queues
+from .items import AprioriSet, AprioriCollection, AprioriCounter, AprioriSession
 
 def prog_bar(maxval, message=''):
     class Message(progressbar.Widget):
@@ -46,22 +43,6 @@ def prog_bar(maxval, message=''):
                                                                   progressbar.widgets.ETA(),
                                                                   msg_widget])
     return pb, msg_widget
-    
-    
-def item_support_worker(transactions: list, minSupport, collection_tuple: tuple):
-    collect = AprioriCollection.from_tuple(collection_tuple)
-    del collection_tuple
-    assert isinstance(collect, AprioriCollection)
-    collect.build_in_lists()
-
-    for transaction in transactions:
-        collect.count_basket(transaction)
-    freq_collect = collect.frequent_items_collection(minSupport, len(transactions))
-
-    assert isinstance(freq_collect, AprioriCollection)
-    return freq_collect
-    #return freq_collect.to_tuple()
-
 
 def grouper(iterable, n, fillvalue=None):
     "Collect data into fixed-length chunks or blocks"
@@ -69,32 +50,89 @@ def grouper(iterable, n, fillvalue=None):
     args = [iter(iterable)] * n
     return zip_longest(*args, fillvalue=fillvalue)
 
-def returnItemsWithMinSupport(item_set: AprioriCollection, transactions, min_support):
-        """calculates the support for items in the itemSet and returns a subset
-       of the itemSet each of whose elements satisfies the minimum support"""
-        n_workers = 4
+def returnItemsWithMinSupport(collect: AprioriCollection, transactions, min_support):
+    """calculates the support for items in the itemSet and returns a subset
+    of the itemSet each of whose elements satisfies the minimum support"""
+    n_workers = 4
+    chunk_siz = max(5000, (collect.size // n_workers) // 25)
 
-        MP = True
-        def workload_partition():
-            if MP:
-                p = Pool(n_workers)
-                _map = p.map
-            else:
-                _map = map
-            item_gen = item_set.to_partitioned_tuples(n_workers * 3)
-            pb, msg = prog_bar(n_workers * 3, 'counting baskets')
-            pb.start()
-            for i, items_sub_collect in enumerate(_map(partial(item_support_worker, transactions, min_support), item_gen)):
-                #assert isinstance(items_sub_collect, AprioriCollection)
-                pb.update(i)
-                yield items_sub_collect
-            if MP:
-                p.close()
-            pb.finish()
-        new_collect = AprioriCollection.from_collection_iter(workload_partition())
-        return new_collect
+    MP = True
+
+    if not MP:
+        n_workers = 1
+
+    intervals_q = Queue()
+    counted_q = Queue()
+
+    def worker():
+        while True:
+            interv = intervals_q.get()
+            if interv is StopIteration:
+                counted_q.put(StopIteration)
+                break
+            start, end, i = interv
+            counter = AprioriCounter(collect, start, end, transactions, min_support)
+            counted_q.put((i, counter))
+
+    start = None
+    n_chunks = 1
+    for i, stop in enumerate(range(0, collect.size, chunk_siz)):
+        if start is None:
+            start = stop
+            continue
+        intervals_q.put((start, stop, i))
+        n_chunks += 1
+        start = stop
+    intervals_q.put((start, collect.size, i+1))
+
+    for _ in range(n_workers):
+        intervals_q.put(StopIteration)
+
+    if MP:
+        p = deque(Process(target=worker) for _ in range(n_workers))
+        for proc in p:
+            proc.start()
+    else:
+        worker()
+
+    def get_results():
+        sentinels = 0
+        pb, msg = prog_bar(n_chunks + n_workers, 'counting baskets')
+        result_cache = dict()
+
+        def get_res():
+            nonlocal sentinels
+            try:
+                result = counted_q.get(timeout=5)
+            except queues.Empty:
+                return
+
+            if result is StopIteration:
+                sentinels += 1
+                return
+            result_cache[result[0]] = result[1]
+
+        i = 1
+        pb.start()
+        while sentinels < n_workers:
+            pb.update(n_chunks - intervals_q.qsize() + n_workers)
+            get_res()
+            #print('##########################')
+            #objgraph.show_growth()
+            #msg('memory: {0}'.format(mem))
+            while i in result_cache:
+                res = result_cache.pop(i)
+                if res:
+                    yield res
+                i += 1
+        pb.finish()
+        if MP:
+            for proc in p:
+                proc.join()
+    collect.filter_from_counters(get_results(), min_support, len(transactions))
 
 compl_time_ratios = list()
+
 
 
 def merge_worker(merge_collections, msg):
@@ -110,11 +148,16 @@ def merge_worker(merge_collections, msg):
     return count
     
     
-def setGenerator(collection, length: int):
+def setGenerator(collection: AprioriCollection):
+    length = collection.k + 1
+    MP = True
     l = collection.size
     n_workers = 4
-    chunk_sz = 32768
-    chunks = int(2 ** math.ceil(math.log2(l / chunk_sz)))
+
+    if not MP:
+        n_workers = 1
+    chunk_sz = 2 ** 13
+    chunks = (l // chunk_sz) + n_workers
 
     set_queue = Queue()
     filtered_sets_queue = Queue()#maxsize=(n_workers+1))
@@ -148,14 +191,13 @@ def setGenerator(collection, length: int):
     t_start = time.time()
     #pb = maxval=len(itemSet))
     pb, msg = prog_bar(l + chunks + n_workers, 'initializing...')
-    MP = True
+
 
     if MP:
         p = deque(Process(target=worker) for _ in range(n_workers))
         for proc in p:
             proc.start()
-    else:
-        n_workers = 1
+
 
     for j in enumerate(item_list):
         set_queue.put(j)
@@ -175,7 +217,11 @@ def setGenerator(collection, length: int):
     sentinels = 0
     results = 0
     while sentinels < n_workers:
-        result = filtered_sets_queue.get()
+        try:
+            result = filtered_sets_queue.get(timeout=5)
+        except queues.Empty:
+            pb.update(l - set_queue.qsize())
+            continue
         msg('{0} results received'.format(results))
         pb.update(l - set_queue.qsize())
         if result is StopIteration:
@@ -191,7 +237,7 @@ def setGenerator(collection, length: int):
             assert isinstance(proc, Process)
             proc.join()
 
-    
+
     collect_siz = merge_worker(merge_collections, msg)
     chunks = collect_siz
     pb.maxval = l + collect_siz
@@ -216,21 +262,21 @@ def setGenerator(collection, length: int):
         else:
             full_set = current_merge[0]
             full_set.size = len(full_set.set_list)
-            full_set.reset_counts()
-
             break
     pb.finish()
     t_delta = time.time() - t_start
     compl_time_ratios.append(compl / t_delta)
-    print('\nDone in {0:3.2f} seconds. complexity/time ratio: {1:.0f}\n'.format(t_delta, compl_time_ratios[-1]))
+    print('\nDone in {0:3.2f} seconds. complexity/time ratio: {1:.0f}\n\tproduced sets: {2}'.format(t_delta,
+                                                                                                    compl_time_ratios[-1],
+                                                                                                    full_set.size),)
     return full_set
 
-def joinSet(itemSet, length):
+def join_set(itemSet):
         """Join a set with itself and returns the n-element itemsets"""
-        return setGenerator(itemSet, length)
+        return setGenerator(itemSet)
 
 
-def getItemSetTransactionList(data_iterator):
+def getItemSetTransactionListFromRecord(data_iterator):
     transactionList = list()
     itemSet = set()
     for record in data_iterator:
@@ -238,75 +284,84 @@ def getItemSetTransactionList(data_iterator):
         transactionList.append(transaction)
         for item in transaction:
             itemSet.add(frozenset([item]))              # Generate 1-itemSets
-    return itemSet, transactionList
+    return transactionList, itemSet
 
 
-def getItemSetTransactionList(df: DataFrame):
+def getItemSetTransactionListFromDataFrame(df: DataFrame):
     transactions = [tuple(sorted(int(el) for el in df.index[df[col] == 1].tolist())) for col in df.columns]
     item_set = AprioriCollection.from_lists(sorted(AprioriSet((int(el),)) for el in df.index.tolist()), 1)
-    return item_set, transactions
+    return transactions, item_set
 
 
 
 
-def runApriori(data_iter, minSupport, minConfidence, max_k=None, min_k=2):
+def runApriori(data, min_support, minConfidence, max_k=None, min_k=2, fp=None):
     """
     run the apriori algorithm. data_iter is a record iterator
     Return both:
      - items (tuple, support)
      - rules ((pretuple, posttuple), confidence)
     """
-    itemSet, transactionList = getItemSetTransactionList(data_iter)
+    if isinstance(data, DataFrame):
+        large_set = AprioriSession.from_scratch(*getItemSetTransactionListFromDataFrame(data), fp=fp)
+    elif isinstance(data, Sequence):
+        large_set = AprioriSession.from_scratch(*getItemSetTransactionListFromRecord(data), fp=fp)
+    else:
+        large_set = AprioriSession.from_fp(data, fp=fp)
 
-    freqSet = defaultdict(int)
-    largeSet = dict()
+    assert isinstance(large_set, AprioriSession)
     # Global dictionary which stores (key=n-itemSets,value=support)
     # which satisfy minSupport
 
     assocRules = dict()
     # Dictionary which stores Association Rules
 
-    oneCSet = returnItemsWithMinSupport(itemSet,
-                                        transactionList,
-                                        minSupport)
+    last_collect = large_set.last_collection()
+    while last_collect.size != 0:
+        if max_k and max_k in large_set and large_set[max_k].counts:
+            break
 
-    currentLSet = oneCSet
-    k = 2
-    while currentLSet.size != 0:
         try:
-            print(k)
-            largeSet[k-1] = currentLSet
-            if max_k is not None and k > max_k:
-                break
-            currentLSet = joinSet(currentLSet, k)
-            currentCSet = returnItemsWithMinSupport(currentLSet,
-                                                    transactionList,
-                                                    minSupport)
-            currentLSet = currentCSet
-            k = k + 1
+            if last_collect.counts:
+                large_set[last_collect.k + 1] = join_set(last_collect)
+            else:
+                returnItemsWithMinSupport(last_collect,
+                                          large_set.transactions,
+                                          min_support)
+                large_set.save()
+
+
+            last_collect = large_set.last_collection()
         except KeyboardInterrupt:
             break
 
-    def getSupport(item):
-            """local function which Returns the support of an item"""
-            return float(freqSet[item])/len(transactionList)
+    n_transactions = len(large_set.transactions)
 
-    toRetItems = []
-    for key, value in largeSet.items():
-        toRetItems.extend([(tuple(item), getSupport(item))
-                           for item in value])
+    def supports(counts):
+        return [count / n_transactions for count in counts]
+
+    def ret_items():
+        for c in large_set.values():
+            yield from zip(c.set_list, supports(c.counts))
+
+    toRetItems = list(ret_items())
 
     toRetRules = []
-    for key, value in list(largeSet.items())[1:]:
-        for item in value:
-            _subsets = map(frozenset, [x for x in subsets(item)])
-            for element in _subsets:
-                remain = item.difference(element)
-                if len(remain) > 0:
-                    confidence = getSupport(item)/getSupport(element)
-                    if confidence >= minConfidence:
-                        toRetRules.append(((tuple(element), tuple(remain)),
-                                           confidence))
+    n_items = large_set.total_size
+    pb, msg = prog_bar(n_items, 'generating rules')
+    pb.start()
+    for k, collect in large_set.items():
+        if k == 1:
+            continue
+
+        for count, item in zip(collect.counts, collect.set_list):
+            pb.update(pb.currval + 1)
+            for subset in item.subsets():
+                remain = AprioriSet(item.difference(subset))
+                _k = len(subset)
+                confidence = count / large_set[_k].get_count(subset)
+                if confidence >= minConfidence:
+                        toRetRules.append(((subset, remain), confidence))
     return toRetItems, toRetRules
 
 

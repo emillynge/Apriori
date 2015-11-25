@@ -91,6 +91,7 @@ def returnItemsWithMinSupport(collect: AprioriCollection, transactions, min_supp
     intervals_q = Queue()
     counted_q = Queue()
 
+    print('\n\tWorkers: {0}\n\tChunk size: {1}\n\tCollection size: {2}'.format(n_workers, chunk_siz, collect.size))
     def worker():
         while True:
             interv = intervals_q.get()
@@ -101,6 +102,7 @@ def returnItemsWithMinSupport(collect: AprioriCollection, transactions, min_supp
             counter = AprioriCounter(collect, start, end, transactions, min_support)
             counted_q.put((i, counter))
 
+    print('init jo queue')
     start = None
     n_chunks = 1
     for i, stop in enumerate(range(0, collect.size, chunk_siz)):
@@ -115,6 +117,7 @@ def returnItemsWithMinSupport(collect: AprioriCollection, transactions, min_supp
     for _ in range(n_workers):
         intervals_q.put(StopIteration)
 
+    print('start workers')
     if MP:
         p = deque(Process(target=worker) for _ in range(n_workers))
         for proc in p:
@@ -225,6 +228,7 @@ def setGenerator(collection: AprioriCollection, n_workers):
     # pb = maxval=len(itemSet))
     pb, msg = prog_bar((l ** 2) // 2 + chunks + n_workers, 'initializing...')
 
+    print('init job queue')
     if MP:
         p = deque(Process(target=worker) for _ in range(n_workers))
         for proc in p:
@@ -247,6 +251,7 @@ def setGenerator(collection: AprioriCollection, n_workers):
 
     sentinels = 0
     results = 0
+    print('collecting results from workers')
     while sentinels < n_workers:
         try:
             result = filtered_sets_queue.get(timeout=5)
@@ -273,6 +278,7 @@ def setGenerator(collection: AprioriCollection, n_workers):
     pb.maxval = l + collect_siz
     merge_idx = 0
     current_merge = list()
+    print('finalizing')
     msg('merging {0} collections'.format(collect_siz))
     while True:
         pb.update(l + chunks - collect_siz)
@@ -335,6 +341,7 @@ def runApriori(data, min_support, minConfidence, max_k=None, fp=None, n_workers=
      - items (tuple, support)
      - rules ((pretuple, posttuple), confidence)
     """
+    print('Reading in data')
     if isinstance(data, DataFrame):
         large_set = AprioriSession.from_scratch(*getItemSetTransactionListFromDataFrame(data), fp=fp)
     elif hasattr(data, 'send'):
@@ -342,6 +349,7 @@ def runApriori(data, min_support, minConfidence, max_k=None, fp=None, n_workers=
     else:
         large_set = AprioriSession.from_fp(data, fp=fp)
 
+    print('Data set loaded -  total_size: {}'.format(large_set.total_size))
     assert isinstance(large_set, AprioriSession)
     last_collect = large_set.last_collection()
     while last_collect.size != 0:
@@ -350,8 +358,10 @@ def runApriori(data, min_support, minConfidence, max_k=None, fp=None, n_workers=
 
         try:
             if last_collect.counts:
+                print('Joining sets...')
                 large_set[last_collect.k + 1] = join_set(last_collect, n_workers)
             else:
+                print('Counting...')
                 returnItemsWithMinSupport(last_collect,
                                           large_set.transactions,
                                           min_support,

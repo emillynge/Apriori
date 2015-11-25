@@ -1,5 +1,5 @@
 __author__ = 'emil'
-from .apriori import runApriori, main
+from .apriori import runApriori, main, PBlogger
 
-__all__ = ['runApriori', 'main']
+__all__ = ['runApriori', 'main', 'PBlogger']
 

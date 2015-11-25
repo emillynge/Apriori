@@ -13,12 +13,38 @@ from itertools import zip_longest
 from collections import defaultdict, deque
 from pandas import DataFrame
 from optparse import OptionParser
-
+from io import StringIO
 import progressbar
 import math
 import time
+import sys
 from multiprocessing import Process, Queue, queues
 from .items import AprioriSet, AprioriCollection, AprioriCounter, AprioriSession
+
+class PBlogger(StringIO):
+    real_logger = None
+
+    def write(self, *args, **kwargs):
+        pos = self.tell()
+        super(PBlogger, self).write(*args, **kwargs)
+        self.seek(pos)
+        if self.real_logger is None:
+            return sys.stderr.write(self.read())
+
+        if 'strip' in self.real_logger:
+            msg = self.read().strip('\r')
+            if 'print' not in self.real_logger:
+                msg += '\n'
+        else:
+            msg = self.read()
+
+        if 'stdout' in self.real_logger:
+            return sys.stdout.write(msg)
+
+        if 'print' in self.real_logger:
+            return print(msg)
+
+        return sys.stderr.write(msg)
 
 
 def prog_bar(maxval, message=''):
@@ -41,7 +67,7 @@ def prog_bar(maxval, message=''):
                                                            progressbar.widgets.Timer(),
                                                            '   ',
                                                            progressbar.widgets.ETA(),
-                                                           msg_widget], fd=sys.stdout)
+                                                           msg_widget], fd=PBlogger())
     return pb, msg_widget
 
 

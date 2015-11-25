@@ -18,7 +18,9 @@ import progressbar
 import logging
 import math
 import time
+import bisect
 import sys
+from itertools import chain, combinations
 from multiprocessing import Process, Queue, queues
 from .items import AprioriSet, AprioriCollection, AprioriCounter, AprioriSession
 _print = print
@@ -29,7 +31,7 @@ class Logging(object):
     @classmethod
     def print(cls, *args, **kwargs):
         if cls.log_streams is None:
-            _print(*args, **kwargs)
+            return _print(*args, **kwargs)
 
         if cls.config is None:
             handlers = list()
@@ -108,7 +110,7 @@ def returnItemsWithMinSupport(collect: AprioriCollection, transactions, min_supp
     of the itemSet each of whose elements satisfies the minimum support"""
     chunk_siz = max(5000, (collect.size // n_workers) // 25)
 
-    MP = True
+    MP = False
 
     if not MP:
         n_workers = 1
@@ -127,7 +129,7 @@ def returnItemsWithMinSupport(collect: AprioriCollection, transactions, min_supp
             counter = AprioriCounter(collect, start, end, transactions, min_support)
             counted_q.put((i, counter))
 
-    print('init jo queue')
+    print('init job queue')
     start = None
     n_chunks = 1
     for i, stop in enumerate(range(0, collect.size, chunk_siz)):
@@ -209,6 +211,10 @@ def setGenerator(collection: AprioriCollection, n_workers):
     MP = True
     l = collection.size
 
+    if length == 2:
+        set_list = list(AprioriSet(item_set) for item_set in combinations((item[0] for item in collection.set_list), 2))
+        return AprioriCollection.from_lists(set_list, 2)
+
     if not MP:
         n_workers = 1
     chunk_sz = 2 ** 13
@@ -216,26 +222,85 @@ def setGenerator(collection: AprioriCollection, n_workers):
 
     set_queue = Queue()
     filtered_sets_queue = Queue()  # maxsize=(n_workers+1))
-    item_list = list(collection.to_item_sets())
+    collection.build_in_lists()
+    items_sort = sorted(collection.in_lists)
+    hi_el = items_sort[-1]  # item element with highest sort value
+    hi_pad = (hi_el,) * collection.k
+    sub_lists = collection.sub_set_lists()
 
     def worker():
         local_sets = [AprioriCollection(length)]
+        _local_set = AprioriCollection(length)
+        def new_local_set(old_set: AprioriCollection) -> AprioriCollection:
+            """
+            put a local collection in merge queue and do as many merges as possible. return empry local collection
+            :param old_set:
+            :return:
+            """
+            local_sets.append(old_set)
+            # Merge last 2 collections in queue if last collection is larger than next to last
+            while len(local_sets) > 1 and local_sets[-1].size >= local_sets[-2].size:
+                local_sets.append(local_sets.pop().merge(local_sets.pop()))
+            return AprioriCollection(length)
+
         while True:
             g = set_queue.get()
             if g is StopIteration:
                 break
-            j, _set = g
-            assert isinstance(_set, AprioriSet)
-            _local_set = AprioriCollection(length)
-            for i in item_list[:j]:
-                _set.union(i, _local_set)
-            local_sets.append(_local_set)
-            while len(local_sets) > 1 and local_sets[-1].size >= local_sets[-2].size:
-                # print(local_sets[-1].size, local_sets[-2].size)
-                local_sets.append(local_sets.pop().merge(local_sets.pop()))
+            i_start, i_end = g
+            for out_k in range(collection.k):
+                _local_set = new_local_set(_local_set)
+                start = bisect.bisect_right(sub_lists[out_k], (i_start,))
+                if i_end is None:
+                    end = collection.size
+                else:
+                    end = bisect.bisect_left(sub_lists[out_k], (i_end,))
+
+                recreate_item = lambda prefix, small_ending, large_ending: AprioriSet(chain(prefix[:out_k],
+                                                                                            (small_ending, large_ending),
+                                                                                            prefix[out_k:]))
+                if start == end:
+                    continue
+                sub_list = sub_lists[out_k][start:end]
+                lo = 0
+                hi = deque([len(sub_list)])
+                first_item = sub_list[lo]
+                small_ending, large_ending = items_sort[0], items_sort[0]
+                prev_max_small_ending = (small_ending, large_ending)
+                while True:
+                    nesting = len(hi)
+                    if nesting == collection.k - 1:
+                        _hi = hi.pop()
+                        nesting = len(hi)
+                        if _hi - lo > 1:
+                            item_prefix = sub_list[lo][:-1]
+                            item_endings = tuple(item[-1] for item in sub_list[lo:_hi])
+                            if prev_max_small_ending > item_endings[:2]:
+                                # the sorting of _local set will be broken if we append these items. do swap
+                                _local_set = new_local_set(_local_set)
+
+                            for i, small_ending in enumerate(item_endings[:-1]):
+                                for large_ending in item_endings[i+1:]:
+                                    _local_set.append(recreate_item(item_prefix, small_ending, large_ending))
+                            prev_max_small_ending = (small_ending, large_ending)
+
+                        lo = _hi
+                        if lo >= len(sub_list):
+                            break
+                        first_item = sub_list[lo]
+
+                    if hi[-1] == lo:
+                        hi.pop()
+                        nesting = len(hi)
+                        _local_set = new_local_set(_local_set)
+                        prev_max_small_ending = (items_sort[0], items_sort[0])
+
+                    _hi = bisect.bisect_right(sub_list, tuple(chain(first_item[:nesting + 1], hi_pad)), lo=lo, hi=hi[-1])
+                    hi.append(_hi)
+
+        local_sets.append(_local_set)
         while len(local_sets) > 1:
             local_sets.append(local_sets.pop().merge(local_sets.pop()))
-
         filtered_sets_queue.put(local_sets.pop())
         filtered_sets_queue.put(StopIteration)
 
@@ -251,7 +316,7 @@ def setGenerator(collection: AprioriCollection, n_workers):
                                                                                                               chunks))
     t_start = time.time()
     # pb = maxval=len(itemSet))
-    pb, msg = prog_bar((l ** 2) // 2 + chunks + n_workers, 'initializing...')
+    pb, msg = prog_bar(l + 1, 'initializing...')
 
     print('init job queue')
     if MP:
@@ -259,12 +324,12 @@ def setGenerator(collection: AprioriCollection, n_workers):
         for proc in p:
             proc.start()
 
-    for j in enumerate(item_list):
+    for j in zip(items_sort, items_sort[1:] + [None]):
         set_queue.put(j)
 
     pb.start()
     msg('started')
-    pb.update(l - set_queue.qsize())
+    pb.update(l - set_queue.qsize() + 1)
 
     for _ in range(n_workers):
         set_queue.put(StopIteration)
@@ -281,10 +346,10 @@ def setGenerator(collection: AprioriCollection, n_workers):
         try:
             result = filtered_sets_queue.get(timeout=5)
         except queues.Empty:
-            pb.update((l - set_queue.qsize()) ** 2 // 2)
+            pb.update(l - set_queue.qsize() + 1)
             continue
         msg('{0} results received'.format(results))
-        pb.update((l - set_queue.qsize()) ** 2 // 2)
+        pb.update(l - set_queue.qsize() + 1)
         if result is StopIteration:
             sentinels += 1
         else:
@@ -331,6 +396,7 @@ def setGenerator(collection: AprioriCollection, n_workers):
                                                                                                     compl_time_ratios[
                                                                                                         -1],
                                                                                                     full_set.size), )
+    assert full_set.is_sorted()
     return full_set
 
 
@@ -377,6 +443,7 @@ def runApriori(data, min_support, minConfidence, max_k=None, fp=None, n_workers=
     print('Data set loaded -  total_size: {}'.format(large_set.total_size))
     assert isinstance(large_set, AprioriSession)
     last_collect = large_set.last_collection()
+    last_collect.sub_set_lists()
     while last_collect.size != 0:
         if max_k and max_k in large_set and large_set[max_k].counts:
             break

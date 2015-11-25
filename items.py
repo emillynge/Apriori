@@ -4,6 +4,7 @@ from collections import Sequence, Iterator, OrderedDict
 from operator import itemgetter
 import heapq
 import json
+from progressbar import ProgressBar
 
 
 class AprioriSet(tuple):
@@ -69,6 +70,9 @@ class AprioriCollection(object):
         if idx == self.size or self.set_list[idx] != new_set:
             self._insert_set(new_set, idx)
 
+    def is_sorted(self):
+        return self.set_list == sorted(self.set_list)
+
     def _insert_set(self, new_set: AprioriSet, idx):
         self.set_list.insert(idx, new_set)
         self.size += 1
@@ -80,6 +84,12 @@ class AprioriCollection(object):
         self.size = len(self.set_list)
         #self.in_lists.update(other_collection.in_lists)
         return self
+
+    def sub_set_lists(self):
+        if self.k == 1:
+            return [self.set_list]
+        getters = [itemgetter(*tuple(chain(range(out_k), range(out_k+1, self.k), (out_k,)))) for out_k in range(self.k)]
+        return [sorted([getter(item) for item in self.set_list]) for getter in ProgressBar(self.k)(getters)]
 
     @staticmethod
     def _merge_generator(lists1: list, lists2:list):

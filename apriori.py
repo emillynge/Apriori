@@ -15,11 +15,36 @@ from pandas import DataFrame
 from optparse import OptionParser
 from io import StringIO
 import progressbar
+import logging
 import math
 import time
 import sys
 from multiprocessing import Process, Queue, queues
 from .items import AprioriSet, AprioriCollection, AprioriCounter, AprioriSession
+_print = print
+
+class Logging(object):
+    log_streams = None
+    config = None
+    @classmethod
+    def print(cls, *args, **kwargs):
+        if cls.log_streams is None:
+            _print(*args, **kwargs)
+
+        if cls.config is None:
+            handlers = list()
+            for stream in cls.log_streams:
+                if stream == 'stream':
+                    handlers.append(logging.StreamHandler(sys.stdout))
+                else:
+                    handlers.append(logging.FileHandler(stream, mode='a'))
+
+            logging.basicConfig(handlers=handlers, level=logging.INFO)
+            cls.log_streams = handlers
+            cls.config = True
+
+        logging.info(*args, **kwargs)
+print = Logging.print
 
 class PBlogger(StringIO):
     real_logger = None

@@ -325,7 +325,7 @@ class AprioriBasket(UserList):
 
     def spool(self, item, *args):
         # Check if we have exhausted current list
-        if self.hi <= self.lo:
+        if self.hi <= self.lo + 1:
 
             # check if there are more lists to pull items from
             if self.remaining_items == self.k:
@@ -368,8 +368,7 @@ class AprioriBasket(UserList):
             return True
 
         # if we are at last item we have to spool again
-        if (self.lo + 1) >= self.hi:
-            self.lo += 1
+        if self.hi <= self.lo + 1:
             return self.spool(item)
 
         # item is not in this basket

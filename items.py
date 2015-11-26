@@ -1,10 +1,11 @@
 import bisect
 from itertools import chain, combinations
-from collections import Sequence, Iterator, OrderedDict
+from collections import Sequence, Iterator, OrderedDict, UserList
 from operator import itemgetter
 import heapq
 import json
 from progressbar import ProgressBar
+from scipy.special import binom
 
 
 class AprioriSet(tuple):
@@ -159,37 +160,19 @@ class AprioriCollection(object):
             if i in in_lists:
                 yield i
 
-    def count_basket2(self, basket_set):
+    def filter_infrequent2(self, basket_sets: Sequence, interval=None):
         """
-        Add basket items sets of size k to counts
-        :param basket_set: SORTED sequence
+        basket sets with only the items that is contained in lists
+        :param basket_set: sequence of items
         :return:
-        Note that the item_sets generated wil be in sorted order.
-        Thus the index of the last found item_set is a lower bound on 
-        the index for the item_set in the current iteration
         """
+        if interval:
+            in_lists = set(chain(*self.set_list[interval[0]:interval[1]]))
+        else:
+            in_lists = self.in_lists
 
-
-        filtered_basket = list(self.filter_infrequent(basket_set))
-        last_set = AprioriSet(filtered_basket[-self.k:])
-        max_hi = bisect.bisect_left(self.set_list, last_set, hi=(self.size - 1))
-        idx = 0
-        prev_idx = 0
-        window = 20
-
-        def get_idx(item_set, window, lo):
-            hi = min(lo + window, max_hi)
-            return bisect.bisect_right(self.set_list, item_set, lo=idx, hi=hi)
-
-        for item_set in combinations(filtered_basket, self.k):
-            idx = get_idx(item_set, window, idx)
-            while self.set_list[idx] < item_set:
-                window *= 2
-                idx = get_idx(item_set, window, idx)
-
-            if self.set_list[idx-1] == item_set:
-                self.counts[idx-1] += 1
-            window, prev_idx = (idx - prev_idx + window * 3) // 4, idx
+        return [[basket_element for basket_element in basket_set if basket_element in in_lists]
+                for basket_set in basket_sets]
 
     def frequent_items_collection(self, min_support, n_baskets):
         return self.from_sorted_items_iter_w_count(self.frequent_items(min_support, n_baskets), self.k)
@@ -322,6 +305,92 @@ class AprioriCollection(object):
             yield AprioriSet(item_set)
 
 
+class AprioriBasket(UserList):
+    __slots__ = ['empty_list', 'remaining_items', 'k', 'hi', 'lo', 'gen']
+    def __init__(self, basket_set, k, empty_list):
+        self.empty_list = empty_list
+        self.remaining_items = len(basket_set)
+        self.k = k
+        self.hi = int(binom(self.remaining_items - 1, k-1))
+        self.lo = 0
+        self.gen = combinations(basket_set, k)
+        super().__init__((next(self.gen) for _ in range(self.hi)))
+        self.append(tuple())
+
+    def refill(self):
+        self.hi = int(self.hi * ((self.remaining_items - self.k) / (self.remaining_items - 1)))
+        self.remaining_items -= 1
+        self[:self.hi] = (next(self.gen) for _ in range(self.hi))
+        self.lo = 0
+
+    def spool(self, item, *args):
+        # Check if we have exhausted current list
+        if self.hi <= self.lo:
+
+            # check if there are more lists to pull items from
+            if self.remaining_items == self.k:
+                self.empty_list.append(self)
+                return False
+
+            # refill list and check first item. We might have jumped "ahead" of the item
+            self.refill()
+            if self[0] > item:
+                self.lo = 0
+                return False
+
+            # A good guess is that the item is the first one after a refill
+            if self[0] == item:
+                self.lo = 1
+                return True
+
+        # Try to find item among next 3 basket items (most jumps are small)
+        for i in range(self.lo + 1, min(self.hi, self.lo + 4)):
+            if self[i] >= item:
+                if self[i] == item:
+                    self.lo = i + 1
+                    return True
+                self.lo = i
+                return False
+
+        self.lo = i + 1
+
+        #_lo = self.lo
+
+
+        # Jump is larger than 3, use bisection instead
+        self.lo = bisect.bisect_left(self, item, lo=(self.lo + 1), hi=(self.hi - 1))
+
+        #if self.lo - _lo > 5:
+        #   print('lo: {0}\thi: {2}\tjump: {1}'.format(self.lo, self.lo - _lo, self.hi))
+
+        # check found item
+        if self[self.lo] == item:
+            return True
+
+        # if we are at last item we have to spool again
+        if (self.lo + 1) >= self.hi:
+            self.lo += 1
+            return self.spool(item)
+
+        # item is not in this basket
+        return False
+
+
+
+
+
+
+    def __contains__(self, item):
+        if self[self.lo] == item:
+            self.lo += 1
+            return True
+
+        if item < self[self.lo]:
+            return False
+
+        return self.spool(item)
+
+
 class AprioriBasketsSubsets(list):
     __slots__ = ['gen']
     def __init__(self, basket: list, collect: AprioriCollection):
@@ -331,13 +400,30 @@ class AprioriBasketsSubsets(list):
     def next(self):
         super(AprioriBasketsSubsets, self).__init__(next(self.gen))
 
+
 class AprioriCounter(list):
     __slots__ = ['collect', 'min_support', 'start', 'end']
 
     def __init__(self, collection: AprioriCollection, start, end, basket_sets, min_support):
         self.min_support = min_support
         self.start, self.end = start, end
-        super(AprioriCounter, self).__init__(self.count_baskets(collection, basket_sets))
+        super(AprioriCounter, self).__init__(self.count_baskets3(collection, basket_sets))
+
+    def count_baskets3(self, collect: AprioriCollection, baskets_sets: list):
+        empty_list = list()
+        baskets = [AprioriBasket(basket_set, collect.k, empty_list) for basket_set in
+                   collect.filter_infrequent2(baskets_sets, interval=(self.start, self.end))]
+
+        for i, item_set in enumerate(collect.set_list[self.start:self.end]):
+            while empty_list:
+                remove_basket = empty_list.pop()
+                baskets.remove(remove_basket)
+                if not baskets:
+                    yield from (0 for _ in range(i, self.end))
+                    return
+
+            yield sum(item_set in basket for basket in baskets)
+
 
     def count_baskets2(self, collect, basket_sets):
         """
@@ -436,6 +522,65 @@ class AprioriCounter(list):
             for basket in rm_list:
                 baskets.remove(basket)
 
+    def count_baskets4(self, collect, basket_sets):
+        """
+        Add basket items sets of size k to counts
+        :param basket_set: SORTED sequence
+        :return:
+        Note that the item_sets generated wil be in sorted order.
+        Thus the index of the last found item_set is a lower bound on
+        the index for the item_set in the current iteration
+        """
+        n_baskets = len(basket_sets)
+        basket_sets = list(deque(sorted(_set)) for _set in collect.filter_infrequent(basket_sets, interval=(self.start, self.end)))
+
+
+
+
+        basket_generators = list(combinations(basket_set, collect.k) for basket_set in basket_sets)
+        baskets = list(self.init_baskets(basket_generators))
+
+        min_basket = min(basket[1] for basket in baskets)
+        skips = 0
+        prev_first_el = collect.set_list[self.start][0]
+        for i, item_set in enumerate(collect.set_list[self.start:self.end]):
+            #if item_set < min_basket:
+            #    skips += 1
+            #    continue
+            if prev_first_el != item_set[0]:
+                for basket_set, basket in zip(basket_sets, baskets):
+                    assert isinstance(basket_set, deque)
+                    if basket[1][0] == prev_first_el:
+                        while basket_set.popleft() != prev_first_el:
+                            pass
+                        skips += 1
+                        basket[0] = combinations(basket_set, collect.k)
+                        basket[1] = next(basket[1])
+                prev_first_el = item_set[0]
+
+            rm_list = []
+            count = 0
+            for basket in baskets:
+                try:
+                    while item_set > basket[1]:
+                        #skips += 1
+                        basket[1] = next(basket[0])
+                        #min_basket = min(min_basket, basket[1])
+
+                    if item_set == basket[1]:
+                        count += 1
+                        basket[1] = next(basket[0])
+                        min_basket = min(min_basket, basket[1])
+
+                except StopIteration:
+                    rm_list.append(basket)
+
+            #if count / n_baskets > self.min_support:
+            yield count
+
+            for basket in rm_list:
+                baskets.remove(basket)
+        print(skips)
 
 class AprioriSession(OrderedDict):
     def __init__(self, transactions, collections, fp):

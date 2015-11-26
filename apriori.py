@@ -110,7 +110,7 @@ def returnItemsWithMinSupport(collect: AprioriCollection, transactions, min_supp
     of the itemSet each of whose elements satisfies the minimum support"""
     chunk_siz = max(5000, (collect.size // n_workers) // 25)
 
-    MP = False
+    MP = True
 
     if not MP:
         n_workers = 1

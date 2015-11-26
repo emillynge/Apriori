@@ -351,14 +351,13 @@ class AprioriBasket(UserList):
                     return True
                 self.lo = i
                 return False
+        i += 1
 
-        self.lo = i + 1
-
-        #_lo = self.lo
-
+        if self.hi <= i:
+            return self.spool(item)
 
         # Jump is larger than 3, use bisection instead
-        self.lo = bisect.bisect_left(self, item, lo=(self.lo + 1), hi=(self.hi - 1))
+        self.lo = bisect.bisect_left(self, item, lo=i, hi=(self.hi - 1))
 
         #if self.lo - _lo > 5:
         #   print('lo: {0}\thi: {2}\tjump: {1}'.format(self.lo, self.lo - _lo, self.hi))

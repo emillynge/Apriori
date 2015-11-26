@@ -354,6 +354,7 @@ class AprioriBasket(UserList):
         i += 1
 
         if self.hi <= i:
+            self.lo = i
             return self.spool(item)
 
         # Jump is larger than 3, use bisection instead

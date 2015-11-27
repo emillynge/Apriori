@@ -1,6 +1,6 @@
 import bisect
 from itertools import chain, combinations
-from collections import Sequence, Iterator, OrderedDict, UserList
+from collections import Sequence, Iterator, OrderedDict, UserList, deque
 from operator import itemgetter
 import heapq
 import json
@@ -307,20 +307,34 @@ class AprioriCollection(object):
 
 class AprioriBasket(UserList):
     __slots__ = ['empty_list', 'remaining_items', 'k', 'hi', 'lo', 'gen']
+    items_per_fill = 2000
+
     def __init__(self, basket_set, k, empty_list):
         self.empty_list = empty_list
         self.remaining_items = len(basket_set)
         self.k = k
-        self.hi = int(binom(self.remaining_items - 1, k-1))
+        self.hi = self.items_per_fill
         self.lo = 0
         self.gen = combinations(basket_set, k)
-        super().__init__((next(self.gen) for _ in range(self.hi)))
-        self.append(tuple())
+        super().__init__(self.read(self.items_per_fill))
+        self.append(tuple())    # insert an item that is guaranteed to be smallest in any comparison
+
+    def read(self, n):
+        """
+        reads at most n items from combinations generator.
+        yields no items if generator is exhausted
+        :return:
+        """
+        i = 0
+        for i, item in zip(range(n), self.gen):
+            yield item
+
+        if i != n - 1:
+            self.gen = None
+            self.hi = i
 
     def refill(self):
-        self.hi = int(self.hi * ((self.remaining_items - self.k) / (self.remaining_items - 1)))
-        self.remaining_items -= 1
-        self[:self.hi] = (next(self.gen) for _ in range(self.hi))
+        self[:self.hi] = self.read(self.items_per_fill)
         self.lo = 0
 
     def spool(self, item, *args):
@@ -328,7 +342,7 @@ class AprioriBasket(UserList):
         if self.hi <= self.lo + 1:
 
             # check if there are more lists to pull items from
-            if self.remaining_items == self.k:
+            if not self.gen:
                 self.empty_list.append(self)
                 return False
 
@@ -373,11 +387,6 @@ class AprioriBasket(UserList):
 
         # item is not in this basket
         return False
-
-
-
-
-
 
     def __contains__(self, item):
         if self[self.lo] == item:

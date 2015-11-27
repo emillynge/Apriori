@@ -224,6 +224,7 @@ def setGenerator(collection: AprioriCollection, n_workers):
     filtered_sets_queue = Queue()  # maxsize=(n_workers+1))
     collection.build_in_lists()
     items_sort = sorted(collection.in_lists)
+    N = len(items_sort)
     hi_el = items_sort[-1]  # item element with highest sort value
     hi_pad = (hi_el,) * collection.k
     sub_lists = collection.sub_set_lists()
@@ -316,7 +317,8 @@ def setGenerator(collection: AprioriCollection, n_workers):
                                                                                                               chunks))
     t_start = time.time()
     # pb = maxval=len(itemSet))
-    pb, msg = prog_bar(l + 1, 'initializing...')
+
+    pb, msg = prog_bar(N + 1, 'initializing...')
 
     print('init job queue')
     if MP:
@@ -329,7 +331,8 @@ def setGenerator(collection: AprioriCollection, n_workers):
 
     pb.start()
     msg('started')
-    pb.update(l - set_queue.qsize() + 1)
+    print(set_queue.qsize())
+    pb.update(N - set_queue.qsize() + 1)
 
     for _ in range(n_workers):
         set_queue.put(StopIteration)
@@ -346,32 +349,32 @@ def setGenerator(collection: AprioriCollection, n_workers):
         try:
             result = filtered_sets_queue.get(timeout=5)
         except queues.Empty:
-            pb.update(l - set_queue.qsize() + 1)
+            pb.update(N - set_queue.qsize() + 1)
             continue
         msg('{0} results received'.format(results))
-        pb.update(l - set_queue.qsize() + 1)
+        pb.update(N - set_queue.qsize() + 1)
         if result is StopIteration:
             sentinels += 1
         else:
             results += 1
             merge_collections[0].append(result)
             merge_worker(merge_collections, msg)
-            pb.update(l - set_queue.qsize())
+            pb.update(N - set_queue.qsize() + 1)
 
     if MP:
         for proc in p:
             assert isinstance(proc, Process)
             proc.join()
 
+
     collect_siz = merge_worker(merge_collections, msg)
+    pb, msg = prog_bar(collect_siz, 'merging {0} collections'.format(collect_siz))
+    pb.start()
     chunks = collect_siz
-    pb.maxval = l + collect_siz
     merge_idx = 0
     current_merge = list()
-    print('finalizing')
-    msg('merging {0} collections'.format(collect_siz))
     while True:
-        pb.update(l + chunks - collect_siz)
+        pb.update(chunks - collect_siz)
         while len(current_merge) != 2:
             if collect_siz == 0:
                 break

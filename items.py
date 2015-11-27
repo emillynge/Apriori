@@ -4,6 +4,7 @@ from collections import Sequence, Iterator, OrderedDict, UserList, deque
 from operator import itemgetter
 import heapq
 import json
+import sys
 from progressbar import ProgressBar
 from scipy.special import binom
 
@@ -90,7 +91,7 @@ class AprioriCollection(object):
         if self.k == 1:
             return [self.set_list]
         getters = [itemgetter(*tuple(chain(range(out_k), range(out_k+1, self.k), (out_k,)))) for out_k in range(self.k)]
-        return [sorted([getter(item) for item in self.set_list]) for getter in ProgressBar(self.k)(getters)]
+        return [sorted([getter(item) for item in self.set_list]) for getter in ProgressBar(self.k, fd=sys.stdout)(getters)]
 
     @staticmethod
     def _merge_generator(lists1: list, lists2:list):

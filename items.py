@@ -308,7 +308,7 @@ class AprioriCollection(object):
 
 class AprioriBasket(UserList):
     __slots__ = ['empty_list', 'remaining_items', 'k', 'hi', 'lo', 'gen']
-    items_per_fill = 2000
+    items_per_fill = 1500
 
     def __init__(self, basket_set, k, empty_list):
         self.empty_list = empty_list
@@ -358,7 +358,9 @@ class AprioriBasket(UserList):
                 self.lo = 1
                 return True
 
+
         # Try to find item among next 3 basket items (most jumps are small)
+        i = self.lo
         for i in range(self.lo + 1, min(self.hi, self.lo + 4)):
             if self[i] >= item:
                 if self[i] == item:

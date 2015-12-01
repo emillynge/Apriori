@@ -50,6 +50,28 @@ class AprioriSet(tuple):
             yield from combinations(self, k)
 
 
+class AprioriCollectionMerger(object):
+    def __init__(self, length):
+        self.collections = list()
+        self.l = length
+
+    def merge(self, full_merge=False):
+        # Merge last 2 collections in queue if last collection is larger than next to last
+        while len(self.collections) > 1 and ((self.collections[-1].size >= self.collections[-2].size) or full_merge):
+            self.collections.append(self.collections.pop().merge(self.collections.pop()))
+
+    def new_set(self, old_set: AprioriCollection=None) -> AprioriCollection:
+            """
+            put a local collection in merge queue and do as many merges as possible. return empry local collection
+            :param old_set:
+            :return:
+            """
+            if old_set is not None:
+                self.collections.append(old_set)
+                self.merge()
+            return AprioriCollection(self.l)
+
+
 class AprioriCollectionSubset(UserList):
     #   def __init__(self, sub_set_list, k):
     #       self.k = k

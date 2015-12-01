@@ -49,6 +49,46 @@ class AprioriSet(tuple):
         for k in range(1, len(self)):
             yield from combinations(self, k)
 
+
+class AprioriCollectionSubset(UserList):
+    #   def __init__(self, sub_set_list, k):
+    #       self.k = k
+    #       super(AprioriCollectionSubset, self).__init__(sub_set_list)
+
+    def find_cut_idx(self, i):
+        item = self[i]
+        for j in range(i, len(self)):
+            if self[j] != item:
+                return j
+        return len(self)
+
+    def separate_candidates(self, candidates):
+        last_subset = [candidates.pop()]
+        while candidates[-1] == last_subset[0]:
+            last_subset.append(candidates.pop())
+        return last_subset
+
+    def iter_subset(self, start, end):
+        gen = iter(self[start:end])
+        for candidates in self._candidate_generator(gen):
+            while candidates[0] != candidates[-1]:
+                yield self.separate_candidates(candidates)
+            yield candidates
+
+    def _candidate_generator(self, gen):
+        first_item = next(gen)
+        while True:
+            candidates = [first_item]
+            item = next(gen)
+            while item[-2] == first_item[-2]:
+                candidates.append(item)
+                item = next(gen)
+            yield candidates
+            first_item = item
+
+        yield candidates
+
+
 class AprioriCollection(object):
     __slots__ = ['set_list', 'k', 'size', 'counts', 'in_lists']
 
@@ -91,7 +131,8 @@ class AprioriCollection(object):
         if self.k == 1:
             return [self.set_list]
         getters = [itemgetter(*tuple(chain(range(out_k), range(out_k+1, self.k), (out_k,)))) for out_k in range(self.k)]
-        return [sorted([getter(item) for item in self.set_list]) for getter in ProgressBar(self.k, fd=sys.stdout)(getters)]
+        return [AprioriCollectionSubset(sorted([getter(item) for item in self.set_list]))
+                for getter in ProgressBar(self.k, fd=sys.stdout)(getters)]
 
     @staticmethod
     def _merge_generator(lists1: list, lists2:list):

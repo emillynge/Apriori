@@ -50,32 +50,13 @@ class AprioriSet(tuple):
             yield from combinations(self, k)
 
 
-class AprioriCollectionMerger(object):
-    def __init__(self, length):
-        self.collections = list()
-        self.l = length
-
-    def merge(self, full_merge=False):
-        # Merge last 2 collections in queue if last collection is larger than next to last
-        while len(self.collections) > 1 and ((self.collections[-1].size >= self.collections[-2].size) or full_merge):
-            self.collections.append(self.collections.pop().merge(self.collections.pop()))
-
-    def new_set(self, old_set: AprioriCollection=None) -> AprioriCollection:
-            """
-            put a local collection in merge queue and do as many merges as possible. return empry local collection
-            :param old_set:
-            :return:
-            """
-            if old_set is not None:
-                self.collections.append(old_set)
-                self.merge()
-            return AprioriCollection(self.l)
-
-
 class AprioriCollectionSubset(UserList):
-    #   def __init__(self, sub_set_list, k):
-    #       self.k = k
-    #       super(AprioriCollectionSubset, self).__init__(sub_set_list)
+    def __init__(self, sub_set_list, out_k):
+        self.out_k = out_k
+        super(AprioriCollectionSubset, self).__init__(sub_set_list)
+
+    def recreate_item(self, prefix, small_ending, large_ending):
+        return AprioriSet(chain(prefix[:self.out_k], (small_ending, large_ending), prefix[self.out_k:]))
 
     def find_cut_idx(self, i):
         item = self[i]
@@ -93,7 +74,7 @@ class AprioriCollectionSubset(UserList):
     def iter_subset(self, start, end):
         gen = iter(self[start:end])
         for candidates in self._candidate_generator(gen):
-            while candidates[0] != candidates[-1]:
+            while candidates[0][:-1] != candidates[-1][:-1]:
                 yield self.separate_candidates(candidates)
             yield candidates
 
@@ -129,6 +110,10 @@ class AprioriCollection(object):
         self.size += 1
         #self.in_lists.update(iter(new_set))
 
+    def extend(self, new_sets):
+        self.set_list.extend(new_sets)
+        self.size = len(self.set_list)
+
     def add(self, new_set: AprioriSet):
         idx = self._index(new_set)
         if idx == self.size or self.set_list[idx] != new_set:
@@ -152,9 +137,10 @@ class AprioriCollection(object):
     def sub_set_lists(self):
         if self.k == 1:
             return [self.set_list]
-        getters = [itemgetter(*tuple(chain(range(out_k), range(out_k+1, self.k), (out_k,)))) for out_k in range(self.k)]
-        return [AprioriCollectionSubset(sorted([getter(item) for item in self.set_list]))
-                for getter in ProgressBar(self.k, fd=sys.stdout)(getters)]
+        getters = [(out_k, itemgetter(*tuple(chain(range(out_k), range(out_k+1, self.k), (out_k,)))))
+                   for out_k in range(self.k)]
+        return [AprioriCollectionSubset(sorted([getter(item) for item in self.set_list]), out_k)
+                for out_k, getter in ProgressBar(self.k, fd=sys.stdout)(getters)]
 
     @staticmethod
     def _merge_generator(lists1: list, lists2:list):
@@ -367,6 +353,32 @@ class AprioriCollection(object):
     def to_item_sets(self):
         for item_set in self.set_list:
             yield AprioriSet(item_set)
+
+
+class AprioriCollectionMerger(object):
+    def __init__(self, length):
+        self.collections = list()
+        self.l = length
+
+    def merge(self, full_merge=False):
+        # Merge last 2 collections in queue if last collection is larger than next to last
+        while len(self.collections) > 1 and ((self.collections[-1].size >= self.collections[-2].size) or full_merge):
+            self.collections.append(self.collections.pop().merge(self.collections.pop()))
+
+    def append(self, collection):
+        self.collections.append(collection)
+        self.merge()
+
+    def new_set(self, old_set: AprioriCollection=None) -> AprioriCollection:
+        """
+        put a local collection in merge queue and do as many merges as possible. return empry local collection
+        :param old_set:
+        :return:
+        """
+        if old_set is not None:
+            self.collections.append(old_set)
+            self.merge()
+        return AprioriCollection(self.l)
 
 
 class AprioriBasket(UserList):

@@ -22,7 +22,7 @@ import bisect
 import sys
 from itertools import chain, combinations
 from multiprocessing import Process, Queue, queues
-from .items import AprioriSet, AprioriCollection, AprioriCounter, AprioriSession
+from .items import AprioriSet, AprioriCollection, AprioriCounter, AprioriSession, AprioriCollectionMerger, AprioriCollectionSubset
 _print = print
 
 class Logging(object):
@@ -205,8 +205,20 @@ def merge_worker(merge_collections, msg):
     msg('merged {0} times'.format(ii))
     return count
 
+class Timer(object):
+    def __init__(self):
+        self.t0 = time.time()
+        self.t_last = self.t0
+
+    @property
+    def elapsed(self):
+        t = time.time()
+        _ret = '{:2.2f} - {:2.2f}'.format(t - self.t_last, t - self.t0)
+        self.t_last = t
+        return _ret
 
 def setGenerator(collection: AprioriCollection, n_workers):
+    timer = Timer()
     length = collection.k + 1
     MP = True
     l = collection.size
@@ -217,188 +229,106 @@ def setGenerator(collection: AprioriCollection, n_workers):
 
     if not MP:
         n_workers = 1
-    chunk_sz = 2 ** 13
-    chunks = (l // chunk_sz) + n_workers
 
-    set_queue = Queue()
-    filtered_sets_queue = Queue()  # maxsize=(n_workers+1))
-    collection.build_in_lists()
-    items_sort = sorted(collection.in_lists)
-    N = len(items_sort)
-    hi_el = items_sort[-1]  # item element with highest sort value
-    hi_pad = (hi_el,) * collection.k
+    chunks = n_workers * length
+    chunk_sz = l // n_workers - 1
+    print('Generating sets of length {0} with {1} starting sets'.format(length, l))
+    print('\tworkers: {}\n\tchunks: {}'.format(n_workers, chunks))
+
+    print('Create sub lists... ' + timer.elapsed)
     sub_lists = collection.sub_set_lists()
 
+    set_queue = Queue()
+    filtered_sets_queue = Queue()
     def worker():
-        local_sets = [AprioriCollection(length)]
-        _local_set = AprioriCollection(length)
-        def new_local_set(old_set: AprioriCollection) -> AprioriCollection:
-            """
-            put a local collection in merge queue and do as many merges as possible. return empry local collection
-            :param old_set:
-            :return:
-            """
-            local_sets.append(old_set)
-            # Merge last 2 collections in queue if last collection is larger than next to last
-            while len(local_sets) > 1 and local_sets[-1].size >= local_sets[-2].size:
-                local_sets.append(local_sets.pop().merge(local_sets.pop()))
-            return AprioriCollection(length)
+        local_sets = AprioriCollectionMerger(length)
+        _local_set = local_sets.new_set()
 
         while True:
             g = set_queue.get()
             if g is StopIteration:
                 break
-            i_start, i_end = g
-            for out_k in range(collection.k):
-                _local_set = new_local_set(_local_set)
-                start = bisect.bisect_right(sub_lists[out_k], (i_start,))
-                if i_end is None:
-                    end = collection.size
-                else:
-                    end = bisect.bisect_left(sub_lists[out_k], (i_end,))
+            start, end, k = g
+            do_merges = k != collection.k - 1
 
-                recreate_item = lambda prefix, small_ending, large_ending: AprioriSet(chain(prefix[:out_k],
-                                                                                            (small_ending, large_ending),
-                                                                                            prefix[out_k:]))
-                if start == end:
+            sub_list = sub_lists[k]
+            assert isinstance(sub_list, AprioriCollectionSubset)
+            prev_ending = tuple()
+            for items in sub_list.iter_subset(start, end):
+                if len(items) <= 1:
                     continue
-                sub_list = sub_lists[out_k][start:end]
-                lo = 0
-                hi = deque([len(sub_list)])
-                first_item = sub_list[lo]
-                small_ending, large_ending = items_sort[0], items_sort[0]
-                prev_max_small_ending = (small_ending, large_ending)
-                while True:
-                    nesting = len(hi)
-                    if nesting == collection.k - 1:
-                        _hi = hi.pop()
-                        nesting = len(hi)
-                        if _hi - lo > 1:
-                            item_prefix = sub_list[lo][:-1]
-                            item_endings = tuple(item[-1] for item in sub_list[lo:_hi])
-                            if prev_max_small_ending > item_endings[:2]:
-                                # the sorting of _local set will be broken if we append these items. do swap
-                                _local_set = new_local_set(_local_set)
 
-                            for i, small_ending in enumerate(item_endings[:-1]):
-                                for large_ending in item_endings[i+1:]:
-                                    _local_set.append(recreate_item(item_prefix, small_ending, large_ending))
-                            prev_max_small_ending = (small_ending, large_ending)
+                item_prefix = items[0][:-1]
+                item_endings = tuple(item[-1] for item in items)
+                if do_merges and prev_ending > item_endings[:2]:
+                    # the sorting of _local_set will be broken if we append these items. do swap
+                    _local_set = local_sets.new_set(_local_set)
 
-                        lo = _hi
-                        if lo >= len(sub_list):
-                            break
-                        first_item = sub_list[lo]
+                _local_set.extend(sub_list.recreate_item(item_prefix, small_ending, large_ending)
+                                  for small_ending, large_ending in combinations(item_endings, 2))
+                prev_ending = item_endings[-2:]
 
-                    if hi[-1] == lo:
-                        hi.pop()
-                        nesting = len(hi)
-                        _local_set = new_local_set(_local_set)
-                        prev_max_small_ending = (items_sort[0], items_sort[0])
+            _local_set = local_sets.new_set(_local_set)
 
-                    _hi = bisect.bisect_right(sub_list, tuple(chain(first_item[:nesting + 1], hi_pad)), lo=lo, hi=hi[-1])
-                    hi.append(_hi)
-
-        local_sets.append(_local_set)
-        while len(local_sets) > 1:
-            local_sets.append(local_sets.pop().merge(local_sets.pop()))
-        filtered_sets_queue.put(local_sets.pop())
+        local_sets.merge(full_merge=True)
+        filtered_sets_queue.put(local_sets.collections[0])
         filtered_sets_queue.put(StopIteration)
 
-    compl = l ** 2 * math.log(length - 1) * (length - 1)
-    if compl_time_ratios:
-        t_est = compl / (1 + compl_time_ratios[-1]) / 2
-    else:
-        t_est = 0
-    print('Generating sets of length {0} with {1} starting sets'.format(length, l))
-    print('\tComplexity: {0:.0}\n\tEstimated completion time: {1:3.0f}\n\tworkers: {2}\n\tchunks: {3}'.format(compl,
-                                                                                                              t_est,
-                                                                                                              n_workers,
-                                                                                                              chunks))
-    t_start = time.time()
-    # pb = maxval=len(itemSet))
-
-    pb, msg = prog_bar(N + 1, 'initializing...')
-
-    print('init job queue')
+    print('init job queue... ' + timer.elapsed)
     if MP:
         p = deque(Process(target=worker) for _ in range(n_workers))
         for proc in p:
             proc.start()
 
-    for j in zip(items_sort, items_sort[1:] + [None]):
-        set_queue.put(j)
+    for out_k in range(collection.k):
+        cuts = [0] + [sub_lists[out_k].find_cut_idx(chunk_sz * i) for i in range(1, n_workers)] + [l]
+        for start, end in zip(cuts[:-1], cuts[1:]):
+            set_queue.put((start, end, out_k))
 
+    print('workers working...' + timer.elapsed)
+    pb, msg = prog_bar(chunks, '')
     pb.start()
     msg('started')
-    print(set_queue.qsize())
-    pb.update(N - set_queue.qsize() + 1)
-
     for _ in range(n_workers):
         set_queue.put(StopIteration)
+
+    def pb_update():
+        pb.update(max(chunks - set_queue.qsize(), 0))
+    pb_update()
 
     if not MP:
         worker()
 
-    merge_collections = defaultdict(list)
-
+    merge_collections = AprioriCollectionMerger(length)
     sentinels = 0
     results = 0
-    print('collecting results from workers')
+    print('collecting results from workers...' + timer.elapsed)
     while sentinels < n_workers:
         try:
             result = filtered_sets_queue.get(timeout=5)
         except queues.Empty:
-            pb.update(N - set_queue.qsize() + 1)
+            pb_update()
             continue
         msg('{0} results received'.format(results))
-        pb.update(N - set_queue.qsize() + 1)
+        pb_update()
         if result is StopIteration:
             sentinels += 1
         else:
             results += 1
-            merge_collections[0].append(result)
-            merge_worker(merge_collections, msg)
-            pb.update(N - set_queue.qsize() + 1)
-
+            merge_collections.append(result)
+            pb_update()
+    pb.finish()
+    print('shutting down workers... ' + timer.elapsed)
     if MP:
         for proc in p:
             assert isinstance(proc, Process)
             proc.join()
 
-
-    collect_siz = merge_worker(merge_collections, msg)
-    pb, msg = prog_bar(collect_siz, 'merging {0} collections'.format(collect_siz))
-    pb.start()
-    chunks = collect_siz
-    merge_idx = 0
-    current_merge = list()
-    while True:
-        pb.update(chunks - collect_siz)
-        while len(current_merge) != 2:
-            if collect_siz == 0:
-                break
-
-            if merge_collections[merge_idx]:
-                current_merge.append(merge_collections[merge_idx].pop())
-                collect_siz -= 1
-            else:
-                merge_idx += 1
-
-        if len(current_merge) == 2:
-            merge_collections[merge_idx + 1].append(current_merge.pop().merge(current_merge.pop()))
-            collect_siz += 1
-        else:
-            full_set = current_merge[0]
-            full_set.size = len(full_set.set_list)
-            break
-    pb.finish()
-    t_delta = time.time() - t_start
-    compl_time_ratios.append(compl / t_delta)
-    print('\nDone in {0:3.2f} seconds. complexity/time ratio: {1:.0f}\n\tproduced sets: {2}'.format(t_delta,
-                                                                                                    compl_time_ratios[
-                                                                                                        -1],
-                                                                                                    full_set.size), )
+    print('doing full merge... ' + timer.elapsed)
+    merge_collections.merge(full_merge=True)
+    full_set = merge_collections.collections[0]
+    print('Done! ' + timer.elapsed)
+    print('produced sets: {}'.format(full_set.size), )
     assert full_set.is_sorted()
     return full_set
 
@@ -462,7 +392,6 @@ def runApriori(data, min_support, minConfidence, max_k=None, fp=None, n_workers=
                                           min_support,
                                           n_workers)
                 large_set.save()
-
             last_collect = large_set.last_collection()
         except KeyboardInterrupt:
             break
@@ -488,7 +417,7 @@ def runApriori(data, min_support, minConfidence, max_k=None, fp=None, n_workers=
 
         for count, item in zip(collect.counts, collect.set_list):
             pb.update(pb.currval + 1)
-            for subset in item.subsets():
+            for subset in AprioriSet(item).subsets():
                 remain = AprioriSet(item.difference(subset))
                 _k = len(subset)
                 confidence = count / large_set[_k].get_count(subset)

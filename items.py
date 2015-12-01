@@ -384,6 +384,7 @@ class AprioriCollectionMerger(object):
 class AprioriBasket(UserList):
     __slots__ = ['empty_list', 'remaining_items', 'k', 'hi', 'lo', 'gen']
     items_per_fill = 1500
+    jumps = list()
 
     def __init__(self, basket_set, k, empty_list):
         self.empty_list = empty_list
@@ -410,15 +411,19 @@ class AprioriBasket(UserList):
             self.hi = i
 
     def refill(self):
-        self[:self.hi] = self.read(self.items_per_fill)
+        super().__init__(self.read(self.items_per_fill))
+        self.hi = len(self)
+        self.append(tuple())
+
         self.lo = 0
 
     def spool(self, item, *args):
         # Check if we have exhausted current list
-        if self.hi <= self.lo + 1:
-
+        while self[self.hi - 1] < item:
             # check if there are more lists to pull items from
             if not self.gen:
+                self[0] = tuple()
+                self.hi = 1
                 self.empty_list.append(self)
                 return False
 
@@ -435,19 +440,15 @@ class AprioriBasket(UserList):
 
 
         # Try to find item among next 3 basket items (most jumps are small)
-        i = self.lo
-        for i in range(self.lo + 1, min(self.hi, self.lo + 4)):
-            if self[i] >= item:
-                if self[i] == item:
-                    self.lo = i + 1
-                    return True
-                self.lo = i
-                return False
-        i += 1
+        i = 0
+        while i < 3 and self[self.lo] < item:
+            self.lo += 1
+            i += 1
 
-        if self.hi <= i:
-            self.lo = i
-            return self.spool(item)
+        if self[self.lo] >= item:
+            if self[i] == item:
+                return True
+            return False
 
         # Jump is larger than 3, use bisection instead
         self.lo = bisect.bisect_left(self, item, lo=i, hi=(self.hi - 1))
@@ -457,11 +458,12 @@ class AprioriBasket(UserList):
 
         # check found item
         if self[self.lo] == item:
+            AprioriBasket.jumps.append(self.lo - i)
             return True
 
         # if we are at last item we have to spool again
-        if self.hi <= self.lo + 1:
-            return self.spool(item)
+        #if self.hi <= self.lo + 1:
+        #    return self.spool(item)
 
         # item is not in this basket
         return False
@@ -507,6 +509,9 @@ class AprioriCounter(list):
                 if not baskets:
                     yield from (0 for _ in range(i, self.end))
                     return
+            if i % 1000 == 0 and AprioriBasket.jumps:
+                AprioriBasket.items_per_fill = max(3 * max(AprioriBasket.jumps), AprioriBasket.items_per_fill)
+                AprioriBasket.jumps.clear()
 
             yield sum(item_set in basket for basket in baskets)
 

@@ -415,9 +415,9 @@ def runApriori(data, min_support, minConfidence, max_k=None, fp=None, n_workers=
         if k == 1:
             continue
 
-        for count, item in zip(collect.counts, collect.set_list):
+        for count, item in zip(collect.counts, (AprioriSet(_item) for _item in collect.set_list)):
             pb.update(pb.currval + 1)
-            for subset in AprioriSet(item).subsets():
+            for subset in item.subsets():
                 remain = AprioriSet(item.difference(subset))
                 _k = len(subset)
                 confidence = count / large_set[_k].get_count(subset)

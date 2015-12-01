@@ -7,7 +7,7 @@ import json
 import sys
 from progressbar import ProgressBar
 from scipy.special import binom
-
+MAX_FILL = 10000
 
 class AprioriSet(tuple):
     __slots__ = []
@@ -510,7 +510,8 @@ class AprioriCounter(list):
                     yield from (0 for _ in range(i, self.end))
                     return
             if i % 1000 == 0 and AprioriBasket.jumps:
-                AprioriBasket.items_per_fill = max(3 * max(AprioriBasket.jumps), AprioriBasket.items_per_fill)
+                AprioriBasket.items_per_fill = min(MAX_FILL, max(3 * max(AprioriBasket.jumps),
+                                                                 AprioriBasket.items_per_fill))
                 AprioriBasket.jumps.clear()
 
             yield sum(item_set in basket for basket in baskets)
